@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: gnxt-backend
+    runtime: node
+    repo: https://github.com/killer0708-dev/backend.git
+    branch: main
+    plan: free
+    healthCheckPath: /health
+    buildCommand: npm install
+    startCommand: bash start.sh
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "5000"
+      - key: MONGO_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: JWT_EXPIRES
+        value: 7d
+      - key: CORS_ORIGIN
+        value: http://localhost:5173,https://gnxt.vercel.app
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
