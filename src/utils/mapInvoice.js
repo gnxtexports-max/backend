@@ -90,12 +90,27 @@ export const mapExcelRowToInvoice = (row, resolvedKeys) => {
     return "";
   };
 
+  const parseDDMMYYYY = (str) => {
+    const parts = str.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/);
+    if (parts) {
+      const [_, day, month, year] = parts;
+      return new Date(+year, +month - 1, +day);
+    }
+    return null;
+  };
+
   const normalizeDate = (excelDate) => {
     // Excel serial number support
     if (typeof excelDate === "number") {
       const jsDate = new Date((excelDate - 25569) * 86400 * 1000);
       jsDate.setHours(0, 0, 0, 0);
       return jsDate;
+    }
+
+    // Handle dd.mm.yyyy / dd/mm/yyyy (client format)
+    if (typeof excelDate === "string") {
+      const parsed = parseDDMMYYYY(excelDate);
+      if (parsed) return parsed;
     }
 
     const d = new Date(excelDate);

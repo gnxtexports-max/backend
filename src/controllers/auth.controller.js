@@ -69,7 +69,8 @@ export const login = async (req, res) => {
     }
 
     if (user) {
-      if (user.status === "Inactive") {
+      const userStatus = (user.status || "").toLowerCase();
+      if (userStatus === "inactive") {
         return res.status(403).json({ success: false, message: "Account is inactive. Contact admin." });
       }
 
@@ -84,6 +85,11 @@ export const login = async (req, res) => {
           status: "Failed",
         });
         return res.status(401).json({ success: false, message: "Invalid credentials" });
+      }
+
+      // Normalize status casing to match enum (in case DB has "active" lowercase)
+      if (user.status !== "Active" && user.status !== "Inactive") {
+        user.status = "Active";
       }
 
       user.lastLogin = new Date();
@@ -103,7 +109,11 @@ export const login = async (req, res) => {
 
       return new Promise((resolve) => {
         req.session.save((err) => {
-          if (err) console.error("Session save error:", err);
+          if (err) {
+            console.error("Session save error:", err);
+            res.status(500).json({ success: false, message: "Session could not be created. Please try again." });
+            return resolve();
+          }
           res.status(200).json({
             success: true,
             message: "Login successful",
@@ -124,7 +134,8 @@ export const login = async (req, res) => {
     return res.status(401).json({ success: false, message: "Invalid credentials" });
   } catch (err) {
     console.error("Login error:", err);
-    res.status(500).json({ success: false, message: "Login failed" });
+    const detail = process.env.NODE_ENV === "production" ? "Login failed" : err.message;
+    res.status(500).json({ success: false, message: "Login failed", detail });
   }
 };
 

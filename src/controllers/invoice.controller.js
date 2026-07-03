@@ -3,6 +3,18 @@ import XLSX from "xlsx";
 import Invoice from "../models/invoice.model.js";
 import { mapExcelRowToInvoice, validateSheetColumns, resolveHeaderKeys } from "../utils/mapInvoice.js";
 
+const parseDate = (value) => {
+  if (!value) return null;
+  // Handle dd.mm.yyyy / dd/mm/yyyy
+  const parts = String(value).match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/);
+  if (parts) {
+    const [_, day, month, year] = parts;
+    return new Date(+year, +month - 1, +day);
+  }
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+};
+
 export const uploadInvoiceSheet = async (req, res) => {
   try {
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
@@ -446,12 +458,20 @@ export const addInvoice = async (req, res) => {
       });
     }
 
+    const parsedDate = parseDate(invoiceDate);
+    if (!parsedDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid invoice date format. Use dd/mm/yyyy (e.g. 01.07.2026)",
+      });
+    }
+
     // Check unique constraint: plantReferenceNumber, customerName, invoiceNumber, invoiceDate
     const existing = await Invoice.findOne({
       plantReferenceNumber: plantNumber.trim(),
       customerName: customerName.trim(),
       invoiceNumber: invoiceNumber.trim(),
-      invoiceDate: new Date(invoiceDate),
+      invoiceDate: parsedDate,
     });
 
     if (existing) {
@@ -466,7 +486,7 @@ export const addInvoice = async (req, res) => {
       customerName: customerName.trim(),
       location: location?.trim() || "",
       invoiceNumber: invoiceNumber.trim(),
-      invoiceDate: new Date(invoiceDate),
+      invoiceDate: parsedDate,
       status: "Pending",
     });
 
