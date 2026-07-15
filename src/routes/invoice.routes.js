@@ -7,7 +7,8 @@ import {
   toggleInvoiceCheck,
   deleteInvoice,
   getInvoiceHistory,
-  addInvoice
+  addInvoice,
+  updateInvoice
 } from "../controllers/invoice.controller.js";
 import { upload } from "../middleware/upload.middleware.js";
 import { authenticate, requirePermission, requireSuperAdmin } from "../middleware/auth.middleware.js";
@@ -18,6 +19,9 @@ router.use(authenticate);
 
 // Add invoice manually
 router.post("/", requirePermission("Invoices", "create"), addInvoice);
+
+// Edit invoice details manually
+router.put("/:invoiceId", requirePermission("Invoices", "edit"), updateInvoice);
 
 // Upload Excel
 router.post("/upload", requirePermission("Invoices", "create"), upload.single("file"), uploadInvoiceSheet);

@@ -70,7 +70,7 @@ export const getShipmentStats = async (req, res) => {
       query["destinations.customerName"] = dealer;
     }
 
-    // ── Fetch Shipments ───────────────────────────────
+    // ── Fetch Shipments (Date Range Filtered for KPIs & Charts) ────────
     const shipments = await Shipment.find(query).lean();
     const shipmentIds = shipments.map((s) => s.shipmentId);
 
@@ -85,7 +85,7 @@ export const getShipmentStats = async (req, res) => {
       $or: expenseOrConditions
     }).lean();
 
-    // Fetch Completed Invoices
+    // Fetch Completed Invoices (Date Range Filtered for KPIs & Charts)
     if (dealer && dealer !== "all") {
       invoiceQuery.customerName = dealer;
     }
@@ -136,9 +136,82 @@ export const getShipmentStats = async (req, res) => {
     const totalExpensesSum = expenses.reduce((sum, e) => sum + (e.totalAmount || 0), 0);
     const completedInvoicesCount = completedInvoices.length;
 
-    // ── Fleet Performance: Drivers Leaderboard ──────────
+    // ── Fetch Historical Completed Data for Detailed Reports ─────────────
+    // Omit date range limitations, but preserve vehicle, driver, and dealer filters
+    const historicalQuery = {};
+    if (vehicle && vehicle !== "all") {
+      historicalQuery.vehicleNumber = vehicle;
+    }
+    if (driver && driver !== "all") {
+      historicalQuery.driverName = driver;
+    }
+    if (dealer && dealer !== "all") {
+      historicalQuery["destinations.customerName"] = dealer;
+    }
+
+    // Populate destinations.invoiceIds to aggregate invoice details within LR records
+    const historicalShipments = await Shipment.find(historicalQuery)
+      .populate("destinations.invoiceIds")
+      .lean();
+
+    const historicalShipmentIds = historicalShipments.map((s) => s.shipmentId);
+
+    // Fetch all historical expenses associated with these shipments/filters
+    const historicalExpenseOrConditions = [
+      { tripId: { $in: historicalShipmentIds } }
+    ];
+    if (vehicle && vehicle !== "all") historicalExpenseOrConditions.push({ vehicleNo: vehicle });
+    if (driver && driver !== "all") historicalExpenseOrConditions.push({ driverName: driver });
+
+    const historicalExpenses = await Expense.find({
+      $or: historicalExpenseOrConditions
+    }).lean();
+
+    const historicalExpenseMap = new Map();
+    historicalExpenses.forEach((exp) => {
+      const key = exp.tripId || exp.lrNumber;
+      if (key) {
+        if (!historicalExpenseMap.has(key)) {
+          historicalExpenseMap.set(key, { total: 0, items: [] });
+        }
+        const grp = historicalExpenseMap.get(key);
+        grp.total += exp.totalAmount || 0;
+        grp.items.push(...(exp.items || []));
+      }
+    });
+
+    // ── Process historical shipments with expense details ───────────────
+    const processedHistoricalShipments = historicalShipments.map((ship) => {
+      const expData = historicalExpenseMap.get(ship.shipmentId) || { total: 0, items: [] };
+      const breakdown = {};
+      expData.items.forEach((item) => {
+        breakdown[item.expenseType] = (breakdown[item.expenseType] || 0) + (item.amount || 0);
+      });
+
+      return {
+        _id: ship._id,
+        shipmentId: ship.shipmentId,
+        createdAt: ship.createdAt,
+        dispatchDate: ship.dispatchDate,
+        deliveryDate: ship.deliveryDate,
+        vehicleNumber: ship.vehicleNumber,
+        driverName: ship.driverName,
+        totalWeightKg: ship.totalWeightKg,
+        totalQuantity: ship.totalQuantity,
+        status: ship.status,
+        totalExpenses: expData.total,
+        expenseBreakdown: breakdown,
+      };
+    });
+
+    // Shipment Expenses Auditing Report shows completed historical shipments (Delivered, Closed)
+    const completedHistoricalShipments = processedHistoricalShipments.filter((s) =>
+      ["Delivered", "Closed"].includes(s.status)
+    );
+
+    // ── Compute Historical Fleet Leaderboards ──────────────────
     const driverPerformanceMap = new Map();
-    processedShipments.forEach((s) => {
+    processedHistoricalShipments.forEach((s) => {
       const name = s.driverName || "Unknown Driver";
       if (!driverPerformanceMap.has(name)) {
         driverPerformanceMap.set(name, {
@@ -158,9 +231,8 @@ export const getShipmentStats = async (req, res) => {
       perf.totalExpenses += s.totalExpenses || 0;
     });
 
-    // ── Fleet Performance: Vehicles Leaderboard ─────────
     const vehiclePerformanceMap = new Map();
-    processedShipments.forEach((s) => {
+    processedHistoricalShipments.forEach((s) => {
       const num = s.vehicleNumber || "Unknown Vehicle";
       if (!vehiclePerformanceMap.has(num)) {
         vehiclePerformanceMap.set(num, {
@@ -179,6 +251,108 @@ export const getShipmentStats = async (req, res) => {
       perf.totalWeightKg += s.totalWeightKg || 0;
       perf.totalExpenses += s.totalExpenses || 0;
     });
+
+    // ── Completed Invoices Historical Ledger Redesign (LR-Centered Grouping) ──
+    // Extract all plant reference numbers from all completed destinations in historical shipments
+    const allPlantRefNos = [];
+    historicalShipments.forEach((s) => {
+      (s.destinations || []).forEach((dest) => {
+        if (!["Delivered", "Closed"].includes(dest.status)) return;
+        if (dest.plantReferenceNumber) {
+          const refs = dest.plantReferenceNumber.split(",").map(p => p.trim()).filter(Boolean);
+          allPlantRefNos.push(...refs);
+        }
+      });
+    });
+
+    // Fetch all matching invoices from DB in one query to avoid N+1 queries
+    let matchedInvoices = [];
+    if (allPlantRefNos.length > 0) {
+      matchedInvoices = await Invoice.find({
+        plantReferenceNumber: { $in: allPlantRefNos }
+      }).lean();
+    }
+
+    // Map plantReferenceNumber -> list of Invoices
+    const invoiceMapByPlant = new Map();
+    matchedInvoices.forEach((inv) => {
+      const plantRef = inv.plantReferenceNumber;
+      if (plantRef) {
+        if (!invoiceMapByPlant.has(plantRef)) {
+          invoiceMapByPlant.set(plantRef, []);
+        }
+        invoiceMapByPlant.get(plantRef).push(inv);
+      }
+    });
+
+    const ledgerRecords = [];
+    historicalShipments.forEach((s) => {
+      (s.destinations || []).forEach((dest) => {
+        // Apply customer/dealer filter if selected
+        if (dealer && dealer !== "all" && dest.customerName !== dealer) return;
+
+        const hasPod = !!(dest.podImages?.length > 0 || dest.podReceiverName || dest.podRemarks);
+        const deliveryCompleteDate = s.deliveryDate || dest.updatedAt || s.updatedAt || s.createdAt;
+
+        // Resolve associated invoices by checking both:
+        // 1. dest.invoiceIds (populated from DB)
+        // 2. invoices matching the plantReferenceNumber list
+        const resolvedInvoicesMap = new Map();
+
+        (dest.invoiceIds || []).forEach((inv) => {
+          if (inv && inv.invoiceNumber) {
+            resolvedInvoicesMap.set(inv.invoiceNumber, {
+              _id: inv._id,
+              invoiceNumber: inv.invoiceNumber,
+              invoiceDate: inv.invoiceDate,
+              plantReferenceNumber: inv.plantReferenceNumber,
+              customerName: inv.customerName,
+              location: inv.location,
+              status: inv.status,
+            });
+          }
+        });
+
+        const refs = (dest.plantReferenceNumber || "").split(",").map(p => p.trim()).filter(Boolean);
+        refs.forEach((ref) => {
+          const invList = invoiceMapByPlant.get(ref) || [];
+          invList.forEach((inv) => {
+            if (inv && inv.invoiceNumber) {
+              resolvedInvoicesMap.set(inv.invoiceNumber, {
+                _id: inv._id,
+                invoiceNumber: inv.invoiceNumber,
+                invoiceDate: inv.invoiceDate,
+                plantReferenceNumber: inv.plantReferenceNumber,
+                customerName: inv.customerName,
+                location: inv.location,
+                status: inv.status,
+              });
+            }
+          });
+        });
+
+        const invoicesList = Array.from(resolvedInvoicesMap.values());
+
+        ledgerRecords.push({
+          _id: dest._id || `${dest.lrNumber}-${dest.plantReferenceNumber}`,
+          lrNumber: dest.lrNumber || "",
+          customerName: dest.customerName || "",
+          location: dest.deliveryLocation || "",
+          plantReferenceNumber: dest.plantReferenceNumber || "",
+          status: dest.status || "",
+          deliveryCompleteDate,
+          dispatchDate: s.dispatchDate || s.createdAt,
+          podSubmitted: hasPod ? "Yes" : "No",
+          podReceiverName: dest.podReceiverName || "",
+          podRemarks: dest.podRemarks || "",
+          podImages: dest.podImages || [],
+          invoices: invoicesList,
+        });
+      });
+    });
+
+    // Sort LR ledger records in ascending order based on Plant Reference Number
+    ledgerRecords.sort((a, b) => (a.plantReferenceNumber || "").localeCompare(b.plantReferenceNumber || ""));
 
     // ── Build Timeline Aggregation Trend ──────────────
     let rangeStart = startDate;
@@ -254,8 +428,8 @@ export const getShipmentStats = async (req, res) => {
           totalExpenses: totalExpensesSum,
           completedInvoices: completedInvoicesCount,
         },
-        shipments: processedShipments,
-        invoices: completedInvoices,
+        shipments: completedHistoricalShipments,
+        invoices: ledgerRecords,
         fleet: {
           drivers: Array.from(driverPerformanceMap.values()).sort((a, b) => b.completedTrips - a.completedTrips),
           vehicles: Array.from(vehiclePerformanceMap.values()).sort((a, b) => b.completedTrips - a.completedTrips),

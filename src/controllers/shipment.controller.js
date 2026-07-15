@@ -92,7 +92,7 @@ export const createShipment = async (req, res) => {
       // Prevent duplicate assignment if UI was out of sync
       const alreadyAssigned = await Invoice.find({
         plantReferenceNumber: { $in: allPlantNumbers },
-        status: { $ne: "Pending" }
+        status: { $nin: ["Pending", "Returned - Awaiting"] }
       }).lean();
 
       if (alreadyAssigned.length > 0) {
@@ -148,7 +148,7 @@ export const getShipments = async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(Number(limit))
-        .populate("destinations.invoiceIds", "invoiceNumber invoiceDate customerName location")
+        .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
         .lean(),
       Shipment.countDocuments(query),
     ]);
@@ -197,7 +197,7 @@ export const getShipmentById = async (req, res) => {
     const shipment = await Shipment.findById(req.params.id)
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
-      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location")
+      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
 
     if (!shipment) return res.status(404).json({ success: false, message: "Shipment not found" });
@@ -706,9 +706,9 @@ export const getInvoicesByPlant = async (req, res) => {
   try {
     const invoices = await Invoice.find({
       plantReferenceNumber: req.params.plantRef,
-      status: { $in: ["Pending"] },
+      status: { $in: ["Pending", "Returned - Awaiting"] },
     })
-      .select("invoiceNumber invoiceDate status location customerName plantReferenceNumber")
+      .select("invoiceNumber invoiceDate status location customerName plantReferenceNumber weight quantity tyre tube flap")
       .sort({ invoiceDate: -1 })
       .lean();
 
@@ -753,8 +753,24 @@ export const getNextShipmentId = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const getPlantNumbers = async (req, res) => {
   try {
-    const plants = await Invoice.distinct("plantReferenceNumber", { status: "Pending" });
-    res.status(200).json({ success: true, data: plants.sort() });
+    const invoices = await Invoice.find({ status: { $in: ["Pending", "Returned - Awaiting"] } }).select("plantReferenceNumber customerName").lean();
+    const plantMap = new Map();
+    invoices.forEach((inv) => {
+      if (inv.plantReferenceNumber) {
+        if (!plantMap.has(inv.plantReferenceNumber)) {
+          plantMap.set(inv.plantReferenceNumber, inv.customerName || "Unknown Customer");
+        }
+      }
+    });
+
+    const data = Array.from(plantMap.entries()).map(([plantNumber, customerName]) => ({
+      plantNumber,
+      customerName,
+    }));
+
+    data.sort((a, b) => a.plantNumber.localeCompare(b.plantNumber));
+
+    res.status(200).json({ success: true, data });
   } catch (err) {
     res.status(500).json({ success: false, message: "Error fetching plant numbers", error: err.message });
   }
@@ -801,7 +817,7 @@ export const getRelatedPlants = async (req, res) => {
       plantReferenceNumber: { $ne: plantRef },
       customerName: refInvoice.customerName,
       location: refInvoice.location,
-      status: "Pending"
+      status: { $in: ["Pending", "Returned - Awaiting"] }
     });
 
     res.status(200).json({ success: true, data: related.sort() });
@@ -836,7 +852,7 @@ export const exportShipments = async (req, res) => {
     }
 
     const shipments = await Shipment.find(query)
-      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate customerName location")
+      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .sort({ createdAt: -1 })
       .lean();
 

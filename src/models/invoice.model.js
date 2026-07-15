@@ -30,9 +30,37 @@ const invoiceSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["In Transit", "Pending", "Delivered", "Assigned", "Cancelled"],
+      enum: ["In Transit", "Pending", "Delivered", "Assigned", "Cancelled", "Returned - Awaiting"],
       default: "Pending",
       index: true,
+    },
+
+    quantity: {
+      type: Number,
+      default: 0,
+    },
+
+    weight: {
+      type: Number,
+      default: 0,
+    },
+
+    tyre: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    tube: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    flap: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
 
     // Stamped the moment status becomes "Delivered" — used for 5-min auto-history rule

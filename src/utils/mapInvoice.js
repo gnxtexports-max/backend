@@ -27,6 +27,35 @@ export const REQUIRED_COLUMN_GROUPS = {
   },
 };
 
+// Define optional column groups for quantity and weight
+export const OPTIONAL_COLUMN_GROUPS = {
+  quantity: {
+    name: "Quantity",
+    keywords: ["Qty", "Quantity", "Invoice Qty", "Billing Qty"],
+    fuzzyPatterns: [/qty/i, /quantity/i],
+  },
+  weight: {
+    name: "Weight",
+    keywords: ["Weight", "Total Weight", "Weight (Kg)", "Weight(Kg)"],
+    fuzzyPatterns: [/weight/i, /kg/i],
+  },
+  tyre: {
+    name: "Tyre",
+    keywords: ["Tyres", "Tyre", "Tyre Qty", "Tyres Qty"],
+    fuzzyPatterns: [/tyre/i],
+  },
+  tube: {
+    name: "Tube",
+    keywords: ["Tubes", "Tube", "Tube Qty", "Tubes Qty"],
+    fuzzyPatterns: [/tube/i],
+  },
+  flap: {
+    name: "Flap",
+    keywords: ["Flaps", "Flap", "Flap Qty", "Flaps Qty"],
+    fuzzyPatterns: [/flap/i],
+  },
+};
+
 // Dynamically resolve actual sheet header keys using exact keywords or fuzzy regexes
 export const resolveHeaderKeys = (sheetHeaders) => {
   const resolved = {
@@ -35,6 +64,11 @@ export const resolveHeaderKeys = (sheetHeaders) => {
     invoiceNumber: null,
     invoiceDate: null,
     location: null,
+    quantity: null,
+    weight: null,
+    tyre: null,
+    tube: null,
+    flap: null,
   };
 
   const headers = sheetHeaders.map(h => h.trim());
@@ -58,6 +92,11 @@ export const resolveHeaderKeys = (sheetHeaders) => {
   resolved.invoiceNumber = findMatch(REQUIRED_COLUMN_GROUPS.invoiceNumber);
   resolved.invoiceDate = findMatch(REQUIRED_COLUMN_GROUPS.invoiceDate);
   resolved.location = findMatch(REQUIRED_COLUMN_GROUPS.location);
+  resolved.quantity = findMatch(OPTIONAL_COLUMN_GROUPS.quantity);
+  resolved.weight = findMatch(OPTIONAL_COLUMN_GROUPS.weight);
+  resolved.tyre = findMatch(OPTIONAL_COLUMN_GROUPS.tyre);
+  resolved.tube = findMatch(OPTIONAL_COLUMN_GROUPS.tube);
+  resolved.flap = findMatch(OPTIONAL_COLUMN_GROUPS.flap);
 
   return resolved;
 };
@@ -122,11 +161,23 @@ export const mapExcelRowToInvoice = (row, resolvedKeys) => {
     return d;
   };
 
+  const parseNumber = (val) => {
+    if (val === undefined || val === null || val === "") return 0;
+    const cleanVal = String(val).replace(/,/g, "").trim();
+    const num = Number(cleanVal);
+    return isNaN(num) ? 0 : num;
+  };
+
   return {
     plantReferenceNumber: String(getValue(resolvedKeys.plantReferenceNumber)).trim(),
     customerName: String(getValue(resolvedKeys.customerName)).trim(),
     invoiceNumber: String(getValue(resolvedKeys.invoiceNumber)).trim(),
     invoiceDate: normalizeDate(getValue(resolvedKeys.invoiceDate)),
     location: String(getValue(resolvedKeys.location)).trim(),
+    quantity: parseNumber(getValue(resolvedKeys.quantity)),
+    weight: parseNumber(getValue(resolvedKeys.weight)),
+    tyre: parseNumber(getValue(resolvedKeys.tyre)),
+    tube: parseNumber(getValue(resolvedKeys.tube)),
+    flap: parseNumber(getValue(resolvedKeys.flap)),
   };
 };

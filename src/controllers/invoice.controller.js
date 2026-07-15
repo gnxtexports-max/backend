@@ -196,6 +196,11 @@ export const getInvoices = async (req, res) => {
         invoiceDate: inv.invoiceDate,
         isChecked: inv.isChecked,
         status: inv.status,
+        quantity: inv.quantity || 0,
+        weight: inv.weight || 0,
+        tyre: inv.tyre || 0,
+        tube: inv.tube || 0,
+        flap: inv.flap || 0,
       });
     });
 
@@ -429,6 +434,11 @@ export const getInvoiceHistory = async (req, res) => {
         deliveredAt: inv.deliveredAt,
         cancelledAt: inv.cancelledAt,
         status: inv.status,
+        quantity: inv.quantity || 0,
+        weight: inv.weight || 0,
+        tyre: inv.tyre || 0,
+        tube: inv.tube || 0,
+        flap: inv.flap || 0,
       });
     });
 
@@ -449,7 +459,7 @@ export const getInvoiceHistory = async (req, res) => {
 
 export const addInvoice = async (req, res) => {
   try {
-    const { plantNumber, customerName, location, invoiceNumber, invoiceDate } = req.body;
+    const { plantNumber, customerName, location, invoiceNumber, invoiceDate, quantity, weight, tyre, tube, flap } = req.body;
 
     if (!plantNumber || !customerName || !invoiceNumber || !invoiceDate) {
       return res.status(400).json({
@@ -487,6 +497,11 @@ export const addInvoice = async (req, res) => {
       location: location?.trim() || "",
       invoiceNumber: invoiceNumber.trim(),
       invoiceDate: parsedDate,
+      quantity: Number(quantity) || 0,
+      weight: Number(weight) || 0,
+      tyre: Number(tyre) || 0,
+      tube: Number(tube) || 0,
+      flap: Number(flap) || 0,
       status: "Pending",
     });
 
@@ -504,6 +519,93 @@ export const addInvoice = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || "Failed to add invoice",
+    });
+  }
+};
+
+export const updateInvoice = async (req, res) => {
+  try {
+    const { invoiceId } = req.params;
+    const {
+      plantNumber,
+      customerName,
+      location,
+      invoiceNumber,
+      invoiceDate,
+      quantity,
+      weight,
+      tyre,
+      tube,
+      flap,
+    } = req.body;
+
+    if (!plantNumber || !customerName || !invoiceNumber || !invoiceDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields: plantNumber, customerName, invoiceNumber, invoiceDate",
+      });
+    }
+
+    const parsedDate = parseDate(invoiceDate);
+    if (!parsedDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid invoice date format.",
+      });
+    }
+
+    // Check unique constraint with other invoices
+    const existing = await Invoice.findOne({
+      _id: { $ne: invoiceId },
+      plantReferenceNumber: plantNumber.trim(),
+      customerName: customerName.trim(),
+      invoiceNumber: invoiceNumber.trim(),
+      invoiceDate: parsedDate,
+    });
+
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: "Another invoice already exists with the same Plant No, Customer Name, Invoice, and Invoice Date",
+      });
+    }
+
+    const updated = await Invoice.findByIdAndUpdate(
+      invoiceId,
+      {
+        plantReferenceNumber: plantNumber.trim(),
+        customerName: customerName.trim(),
+        location: location?.trim() || "",
+        invoiceNumber: invoiceNumber.trim(),
+        invoiceDate: parsedDate,
+        quantity: Number(quantity) || 0,
+        weight: Number(weight) || 0,
+        tyre: Number(tyre) || 0,
+        tube: Number(tube) || 0,
+        flap: Number(flap) || 0,
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!updated) {
+      return res.status(404).json({
+        success: false,
+        message: "Invoice not found",
+      });
+    }
+
+    if (req.io) req.io.emit("invoices:changed");
+
+    res.json({
+      success: true,
+      message: "Invoice updated successfully",
+      data: updated,
+    });
+  } catch (error) {
+    console.error("Update invoice error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to update invoice",
     });
   }
 };
