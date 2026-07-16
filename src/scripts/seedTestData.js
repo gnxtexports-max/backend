@@ -119,7 +119,7 @@ async function seed() {
           invoiceIds:          [invoice._id],
           totalTyres:          50,
           totalTubes:          50,
-          totalFlaps:          20,
+          totalGlaps:          20,
           weightKg:            800,
         },
       ],

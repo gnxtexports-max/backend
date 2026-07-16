@@ -49,10 +49,10 @@ export const OPTIONAL_COLUMN_GROUPS = {
     keywords: ["Tubes", "Tube", "Tube Qty", "Tubes Qty"],
     fuzzyPatterns: [/tube/i],
   },
-  flap: {
-    name: "Flap",
-    keywords: ["Flaps", "Flap", "Flap Qty", "Flaps Qty"],
-    fuzzyPatterns: [/flap/i],
+  glap: {
+    name: "Glap",
+    keywords: ["Glaps", "Glap", "Glap Qty", "Glaps Qty"],
+    fuzzyPatterns: [/glap/i],
   },
 };
 
@@ -68,7 +68,7 @@ export const resolveHeaderKeys = (sheetHeaders) => {
     weight: null,
     tyre: null,
     tube: null,
-    flap: null,
+    glap: null,
   };
 
   const headers = sheetHeaders.map(h => h.trim());
@@ -96,7 +96,7 @@ export const resolveHeaderKeys = (sheetHeaders) => {
   resolved.weight = findMatch(OPTIONAL_COLUMN_GROUPS.weight);
   resolved.tyre = findMatch(OPTIONAL_COLUMN_GROUPS.tyre);
   resolved.tube = findMatch(OPTIONAL_COLUMN_GROUPS.tube);
-  resolved.flap = findMatch(OPTIONAL_COLUMN_GROUPS.flap);
+  resolved.glap = findMatch(OPTIONAL_COLUMN_GROUPS.glap);
 
   return resolved;
 };
@@ -178,6 +178,6 @@ export const mapExcelRowToInvoice = (row, resolvedKeys) => {
     weight: parseNumber(getValue(resolvedKeys.weight)),
     tyre: parseNumber(getValue(resolvedKeys.tyre)),
     tube: parseNumber(getValue(resolvedKeys.tube)),
-    flap: parseNumber(getValue(resolvedKeys.flap)),
+    glap: parseNumber(getValue(resolvedKeys.glap)),
   };
 };
