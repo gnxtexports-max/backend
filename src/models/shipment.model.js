@@ -18,11 +18,69 @@ async function generateShipmentId() {
   return `${prefix}${String(next).padStart(5, "0")}`;
 }
 
-/* ── Auto-generate LR Number: LR-YYYY-NNNNN-DD ── */
-async function generateLRNumber(shipmentSeq, destinationIndex) {
+/* ── Auto-generate LR Number: LR-YYYY-NNNNN ── */
+export async function generateNextLRNumber() {
   const year = new Date().getFullYear();
-  return `LR-${year}-${String(shipmentSeq).padStart(5, "0")}-${String(destinationIndex + 1).padStart(2, "0")}`;
+  const prefix = `LR-${year}-`;
+  const lastShipments = await mongoose.model("Shipment").find(
+    { "destinations.lrNumber": { $regex: `^${prefix}` } }
+  )
+  .sort({ createdAt: -1 })
+  .limit(10)
+  .lean();
+
+  let maxSeq = 0;
+  for (const s of lastShipments) {
+    for (const d of s.destinations || []) {
+      if (d.lrNumber && d.lrNumber.startsWith(prefix)) {
+        const parts = d.lrNumber.split("-");
+        if (parts.length === 3) {
+          const seq = parseInt(parts[2], 10);
+          if (!isNaN(seq) && seq > maxSeq) {
+            maxSeq = seq;
+          }
+        }
+      }
+    }
+  }
+
+  if (maxSeq === 0) {
+    const lastAnyShipment = await mongoose.model("Shipment").findOne(
+      { "destinations.lrNumber": { $regex: "^LR-" } }
+    )
+    .sort({ createdAt: -1 })
+    .lean();
+    if (lastAnyShipment) {
+      for (const d of lastAnyShipment.destinations || []) {
+        if (d.lrNumber && d.lrNumber.startsWith("LR-")) {
+          const parts = d.lrNumber.split("-");
+          if (parts.length === 3) {
+            const seq = parseInt(parts[2], 10);
+            if (!isNaN(seq) && seq > maxSeq) {
+              maxSeq = seq;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return maxSeq + 1;
 }
+
+export async function assignSequentialLRNumbers(destinations) {
+  const year = new Date().getFullYear();
+  const prefix = `LR-${year}-`;
+  let nextSeq = await generateNextLRNumber();
+
+  for (let i = 0; i < destinations.length; i++) {
+    if (!destinations[i].lrNumber) {
+      destinations[i].lrNumber = `${prefix}${String(nextSeq).padStart(5, "0")}`;
+      nextSeq++;
+    }
+  }
+}
+
 
 /* ── Destination sub-schema ── */
 const destinationSchema = new mongoose.Schema(
@@ -103,13 +161,11 @@ shipmentSchema.pre("save", async function () {
     // Generate shipment ID: SHP-YYYY-NNNNN
     this.shipmentId = await generateShipmentId();
 
-    // Extract the 5-digit sequence from SHP-YYYY-NNNNN
-    const seqStr = this.shipmentId.split("-")[2]; // e.g. "00143"
-    const seq = parseInt(seqStr, 10);           // e.g. 143
+    // Assign sequential LR numbers for destinations
+    await assignSequentialLRNumbers(this.destinations);
 
-    // Generate LR number for each destination and compute per-destination totals
+    // Compute per-destination totals
     for (let i = 0; i < this.destinations.length; i++) {
-      this.destinations[i].lrNumber = await generateLRNumber(seq, i);
       const d = this.destinations[i];
       d.totalQuantity = (d.totalTyres || 0) + (d.totalTubes || 0) + (d.totalGlaps || 0);
     }

@@ -519,6 +519,16 @@ export const updateShipment = async (req, res) => {
 
     // ── Destinations ────────────────────────────────
     if (destinations?.length) {
+      let nextSeq = null;
+      const year = new Date().getFullYear();
+      const prefix = `LR-${year}-`;
+      
+      const needsLrCount = destinations.filter((d, i) => !(existing.destinations?.[i]?.lrNumber || d.lrNumber)).length;
+      if (needsLrCount > 0) {
+        const { generateNextLRNumber } = await import("../models/shipment.model.js");
+        nextSeq = await generateNextLRNumber();
+      }
+
       // Re-resolve customerName + location from invoices (same as create)
       const resolvedDests = await Promise.all(destinations.map(async (d, i) => {
         let customerName = d.customerName || "";
@@ -546,11 +556,9 @@ export const updateShipment = async (req, res) => {
         }
 
         let existingLr = existing.destinations?.[i]?.lrNumber || d.lrNumber || "";
-        if (!existingLr) {
-          const parts = existing.shipmentId.split("-"); // ["SHP", "YYYY", "NNNNN"]
-          const year = parts[1];
-          const seq = parts[2];
-          existingLr = `LR-${year}-${seq}-${String(i + 1).padStart(2, "0")}`;
+        if (!existingLr && nextSeq !== null) {
+          const priorNeedsCount = destinations.slice(0, i).filter((prevD, prevIdx) => !(existing.destinations?.[prevIdx]?.lrNumber || prevD.lrNumber)).length;
+          existingLr = `${prefix}${String(nextSeq + priorNeedsCount).padStart(5, "0")}`;
         }
 
         return {
@@ -738,10 +746,12 @@ export const getNextShipmentId = async (req, res) => {
     }
 
     const nextShipmentId = `${prefix}${String(next).padStart(5, "0")}`;
-    // LR numbers follow the same sequence: LR-YYYY-NNNNN-01, -02, etc.
-    const lrPrefix = `LR-${year}-${String(next).padStart(5, "0")}`;
 
-    res.status(200).json({ success: true, data: { nextShipmentId, lrPrefix, sequence: next } });
+    const { generateNextLRNumber } = await import("../models/shipment.model.js");
+    const nextLrSeq = await generateNextLRNumber();
+    const lrPrefix = `LR-${year}-`;
+
+    res.status(200).json({ success: true, data: { nextShipmentId, lrPrefix, nextLrSeq, sequence: next } });
   } catch (err) {
     res.status(500).json({ success: false, message: "Error fetching next ID", error: err.message });
   }
