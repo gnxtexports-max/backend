@@ -62,7 +62,7 @@ export const createShipment = async (req, res) => {
         invoiceIds: d.invoiceIds || [],
         totalTyres: d.totalTyres || 0,
         totalTubes: d.totalTubes || 0,
-        totalGlaps: d.totalGlaps || 0,
+        totalFlaps: d.totalFlaps || 0,
         weightKg: d.weightKg || 0,
       };
     }));
@@ -148,7 +148,7 @@ export const getShipments = async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(Number(limit))
-        .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube glap")
+        .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
         .lean(),
       Shipment.countDocuments(query),
     ]);
@@ -197,7 +197,7 @@ export const getShipmentById = async (req, res) => {
     const shipment = await Shipment.findById(req.params.id)
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
-      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube glap")
+      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
 
     if (!shipment) return res.status(404).json({ success: false, message: "Shipment not found" });
@@ -569,9 +569,9 @@ export const updateShipment = async (req, res) => {
           invoiceIds: d.invoiceIds || [],
           totalTyres: d.totalTyres || 0,
           totalTubes: d.totalTubes || 0,
-          totalGlaps: d.totalGlaps || 0,
+          totalFlaps: d.totalFlaps || 0,
           weightKg: d.weightKg || 0,
-          totalQuantity: (d.totalTyres || 0) + (d.totalTubes || 0) + (d.totalGlaps || 0),
+          totalQuantity: (d.totalTyres || 0) + (d.totalTubes || 0) + (d.totalFlaps || 0),
         };
       }));
 
@@ -716,7 +716,7 @@ export const getInvoicesByPlant = async (req, res) => {
       plantReferenceNumber: req.params.plantRef,
       status: { $in: ["Pending", "Returned - Awaiting"] },
     })
-      .select("invoiceNumber invoiceDate status location customerName plantReferenceNumber weight quantity tyre tube glap")
+      .select("invoiceNumber invoiceDate status location customerName plantReferenceNumber weight quantity tyre tube flap")
       .sort({ invoiceDate: -1 })
       .lean();
 
@@ -862,7 +862,7 @@ export const exportShipments = async (req, res) => {
     }
 
     const shipments = await Shipment.find(query)
-      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube glap")
+      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .sort({ createdAt: -1 })
       .lean();
 

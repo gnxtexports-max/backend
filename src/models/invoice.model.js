@@ -57,7 +57,7 @@ const invoiceSchema = new mongoose.Schema(
       min: 0,
     },
 
-    glap: {
+    flap: {
       type: Number,
       default: 0,
       min: 0,

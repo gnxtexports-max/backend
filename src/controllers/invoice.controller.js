@@ -200,7 +200,7 @@ export const getInvoices = async (req, res) => {
         weight: inv.weight || 0,
         tyre: inv.tyre || 0,
         tube: inv.tube || 0,
-        glap: inv.glap || 0,
+        flap: inv.flap || 0,
       });
     });
 
@@ -438,7 +438,7 @@ export const getInvoiceHistory = async (req, res) => {
         weight: inv.weight || 0,
         tyre: inv.tyre || 0,
         tube: inv.tube || 0,
-        glap: inv.glap || 0,
+        flap: inv.flap || 0,
       });
     });
 
@@ -459,7 +459,7 @@ export const getInvoiceHistory = async (req, res) => {
 
 export const addInvoice = async (req, res) => {
   try {
-    const { plantNumber, customerName, location, invoiceNumber, invoiceDate, quantity, weight, tyre, tube, glap } = req.body;
+    const { plantNumber, customerName, location, invoiceNumber, invoiceDate, quantity, weight, tyre, tube, flap } = req.body;
 
     if (!plantNumber || !customerName || !invoiceNumber || !invoiceDate) {
       return res.status(400).json({
@@ -501,7 +501,7 @@ export const addInvoice = async (req, res) => {
       weight: Number(weight) || 0,
       tyre: Number(tyre) || 0,
       tube: Number(tube) || 0,
-      glap: Number(glap) || 0,
+      flap: Number(flap) || 0,
       status: "Pending",
     });
 
@@ -536,7 +536,7 @@ export const updateInvoice = async (req, res) => {
       weight,
       tyre,
       tube,
-      glap,
+      flap,
     } = req.body;
 
     if (!plantNumber || !customerName || !invoiceNumber || !invoiceDate) {
@@ -582,7 +582,7 @@ export const updateInvoice = async (req, res) => {
         weight: Number(weight) || 0,
         tyre: Number(tyre) || 0,
         tube: Number(tube) || 0,
-        glap: Number(glap) || 0,
+        flap: Number(flap) || 0,
       },
       { returnDocument: 'after' }
     );

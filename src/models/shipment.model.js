@@ -93,7 +93,7 @@ const destinationSchema = new mongoose.Schema(
     invoiceIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "Invoice" }],
     totalTyres: { type: Number, default: 0, min: 0 },
     totalTubes: { type: Number, default: 0, min: 0 },
-    totalGlaps: { type: Number, default: 0, min: 0 },
+    totalFlaps: { type: Number, default: 0, min: 0 },
     totalQuantity: { type: Number, default: 0 },
     weightKg: { type: Number, default: 0, min: 0 },
     status: { type: String, enum: ["Pending", "Delivered", "Closed"], default: "Pending" },
@@ -167,7 +167,7 @@ shipmentSchema.pre("save", async function () {
     // Compute per-destination totals
     for (let i = 0; i < this.destinations.length; i++) {
       const d = this.destinations[i];
-      d.totalQuantity = (d.totalTyres || 0) + (d.totalTubes || 0) + (d.totalGlaps || 0);
+      d.totalQuantity = (d.totalTyres || 0) + (d.totalTubes || 0) + (d.totalFlaps || 0);
     }
 
     // Compute shipment-level totals
