@@ -612,7 +612,7 @@ export const updateInvoice = async (req, res) => {
               const totalFlaps = invoices.reduce((sum, inv) => sum + (Number(inv.flap) || 0), 0);
               const totalQuantity = totalTyres + totalTubes + totalFlaps;
 
-              d.weightKg = parseFloat(totalWeight.toFixed(1));
+              d.weightKg = parseFloat(totalWeight.toFixed(2));
               d.totalTyres = totalTyres;
               d.totalTubes = totalTubes;
               d.totalFlaps = totalFlaps;
@@ -625,7 +625,7 @@ export const updateInvoice = async (req, res) => {
 
         if (modified) {
           s.destinations = updatedDestinations;
-          s.totalWeightKg = parseFloat(updatedDestinations.reduce((sum, d) => sum + (Number(d.weightKg) || 0), 0).toFixed(1));
+          s.totalWeightKg = parseFloat(updatedDestinations.reduce((sum, d) => sum + (Number(d.weightKg) || 0), 0).toFixed(2));
           s.totalQuantity = updatedDestinations.reduce((sum, d) => sum + (Number(d.totalQuantity) || 0), 0);
           await s.save();
         }

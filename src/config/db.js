@@ -81,14 +81,14 @@ const connectDB = async () => {
               const totalQuantity = totalTyres + totalTubes + totalFlaps;
 
               // Check if any value is different
-              const weightDiff = Math.abs((d.weightKg || 0) - totalWeight) > 0.05;
+              const weightDiff = Math.abs((d.weightKg || 0) - totalWeight) > 0.001;
               const tyresDiff = (d.totalTyres || 0) !== totalTyres;
               const tubesDiff = (d.totalTubes || 0) !== totalTubes;
               const flapsDiff = (d.totalFlaps || 0) !== totalFlaps;
               const qtyDiff = (d.totalQuantity || 0) !== totalQuantity;
 
               if (weightDiff || tyresDiff || tubesDiff || flapsDiff || qtyDiff) {
-                d.weightKg = parseFloat(totalWeight.toFixed(1));
+                d.weightKg = parseFloat(totalWeight.toFixed(2));
                 d.totalTyres = totalTyres;
                 d.totalTubes = totalTubes;
                 d.totalFlaps = totalFlaps;
@@ -109,7 +109,7 @@ const connectDB = async () => {
             { 
               $set: { 
                 destinations: updatedDestinations,
-                totalWeightKg: parseFloat(totalWeightKg.toFixed(1)),
+                totalWeightKg: parseFloat(totalWeightKg.toFixed(2)),
                 totalQuantity: totalQuantity
               } 
             }
