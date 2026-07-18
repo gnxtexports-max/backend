@@ -305,6 +305,7 @@ export const updateShipmentStatus = async (req, res) => {
       const populatedShipment = await Shipment.findById(shipment._id)
         .populate("vehicleId", "vehicleNo type model capacityKg")
         .populate("driverId", "name phone licenseNumber driverType")
+        .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
         .lean();
 
       return res.status(200).json({ success: true, message: "Destination status updated", data: populatedShipment });
@@ -327,6 +328,7 @@ export const updateShipmentStatus = async (req, res) => {
     )
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
+      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
     if (!shipment) return res.status(404).json({ success: false, message: "Shipment not found" });
 
@@ -415,6 +417,7 @@ export const updateShipmentPOD = async (req, res) => {
     const populated = await Shipment.findById(shipment._id)
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
+      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
 
     res.status(200).json({ success: true, message: "POD updated", data: populated });
@@ -463,6 +466,7 @@ export const markArrival = async (req, res) => {
     const populated = await Shipment.findById(shipment._id)
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
+      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
 
     res.status(200).json({ success: true, message: "Arrival recorded", data: populated });
@@ -632,6 +636,7 @@ export const updateShipment = async (req, res) => {
     const shipment = await Shipment.findByIdAndUpdate(req.params.id, update, { returnDocument: "after" })
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
+      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
 
     // Sync vehicle/driver status after update

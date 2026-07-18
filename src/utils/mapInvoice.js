@@ -37,22 +37,22 @@ export const OPTIONAL_COLUMN_GROUPS = {
   weight: {
     name: "Weight",
     keywords: ["Weight", "Total Weight", "Weight (Kg)", "Weight(Kg)"],
-    fuzzyPatterns: [/weight/i, /kg/i],
+    fuzzyPatterns: [/weight/i, /kg/i, /wt/i],
   },
   tyre: {
     name: "Tyre",
     keywords: ["Tyres", "Tyre", "Tyre Qty", "Tyres Qty"],
-    fuzzyPatterns: [/tyre/i],
+    fuzzyPatterns: [/tyre\s*(?:qty|quantity|count|billing|billed|s)?$/i, /^tyre$/i],
   },
   tube: {
     name: "Tube",
     keywords: ["Tubes", "Tube", "Tube Qty", "Tubes Qty"],
-    fuzzyPatterns: [/tube/i],
+    fuzzyPatterns: [/tube\s*(?:qty|quantity|count|billing|billed|s)?$/i, /^tube$/i],
   },
   flap: {
     name: "Flap",
     keywords: ["Flaps", "Flap", "Flap Qty", "Flaps Qty", "Glaps", "Glap", "Glap Qty", "Glaps Qty"],
-    fuzzyPatterns: [/flap/i, /glap/i],
+    fuzzyPatterns: [/(?:flap|glap)\s*(?:qty|quantity|count|billing|billed|s)?$/i, /^(?:flap|glap)$/i],
   },
 };
 
