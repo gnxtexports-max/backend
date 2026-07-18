@@ -31,18 +31,24 @@ const syncInvoicesFromDestinations = async (destinations) => {
         });
       }
     } else {
-      const tyre = Number(d.totalTyres) || 0;
-      const tube = Number(d.totalTubes) || 0;
-      const flap = Number(d.totalFlaps) || 0;
-      const weight = Number(d.weightKg) || 0;
-      const quantity = tyre + tube + flap;
+      // Fallback for when plantData is empty (e.g. old shipments or single invoice destinations)
+      if (d.invoiceIds?.length === 1) {
+        const tyre = Number(d.totalTyres) || 0;
+        const tube = Number(d.totalTubes) || 0;
+        const flap = Number(d.totalFlaps) || 0;
+        const weight = Number(d.weightKg) || 0;
+        const quantity = tyre + tube + flap;
 
-      if (d.invoiceIds?.length) {
-        await Invoice.updateMany(
-          { _id: { $in: d.invoiceIds } },
-          { tyre, tube, flap, weight, quantity }
-        );
+        // Only update if there is actual non-zero data to sync, to avoid zeroing out valid data
+        if (tyre || tube || flap || weight) {
+          await Invoice.updateOne(
+            { _id: d.invoiceIds[0] },
+            { tyre, tube, flap, weight, quantity }
+          );
+        }
       }
+      // If there are multiple invoices and no plantData, DO NOT run updateMany because
+      // that would overwrite every invoice with the total sum or zero them out.
     }
   }
 };
