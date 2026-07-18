@@ -28,7 +28,7 @@ const connectDB = async () => {
     console.log("MongoDB Connected",process.env.MONGODB_URI);
     await autoSeedSuperAdmin();
 
-    // Run self-healing migration for glap -> flap and totalGlaps -> totalFlaps
+    // Run self-healing migration for glap -> flap, totalGlaps -> totalFlaps, and sync shipment totals with invoices
     try {
       const db = mongoose.connection.db;
       
@@ -63,6 +63,62 @@ const connectDB = async () => {
       }
       if (shipmentUpdateCount > 0) {
         console.log(`[Migration] Migrated ${shipmentUpdateCount} shipments (copied totalGlaps to totalFlaps)`);
+      }
+
+      // 3. Shipments: Sync all shipment destination totals with their linked invoices
+      const allShipments = await db.collection("shipments").find({}).toArray();
+      let shipmentSyncCount = 0;
+      for (const s of allShipments) {
+        let modified = false;
+        const updatedDestinations = await Promise.all((s.destinations || []).map(async (d) => {
+          if (d.invoiceIds && d.invoiceIds.length > 0) {
+            const invoices = await db.collection("invoices").find({ _id: { $in: d.invoiceIds } }).toArray();
+            if (invoices.length > 0) {
+              const totalWeight = invoices.reduce((sum, inv) => sum + (Number(inv.weight) || 0), 0);
+              const totalTyres = invoices.reduce((sum, inv) => sum + (Number(inv.tyre) || 0), 0);
+              const totalTubes = invoices.reduce((sum, inv) => sum + (Number(inv.tube) || 0), 0);
+              const totalFlaps = invoices.reduce((sum, inv) => sum + (Number(inv.flap) || 0), 0);
+              const totalQuantity = totalTyres + totalTubes + totalFlaps;
+
+              // Check if any value is different
+              const weightDiff = Math.abs((d.weightKg || 0) - totalWeight) > 0.05;
+              const tyresDiff = (d.totalTyres || 0) !== totalTyres;
+              const tubesDiff = (d.totalTubes || 0) !== totalTubes;
+              const flapsDiff = (d.totalFlaps || 0) !== totalFlaps;
+              const qtyDiff = (d.totalQuantity || 0) !== totalQuantity;
+
+              if (weightDiff || tyresDiff || tubesDiff || flapsDiff || qtyDiff) {
+                d.weightKg = parseFloat(totalWeight.toFixed(1));
+                d.totalTyres = totalTyres;
+                d.totalTubes = totalTubes;
+                d.totalFlaps = totalFlaps;
+                d.totalQuantity = totalQuantity;
+                modified = true;
+              }
+            }
+          }
+          return d;
+        }));
+
+        if (modified) {
+          const totalWeightKg = updatedDestinations.reduce((sum, d) => sum + (Number(d.weightKg) || 0), 0);
+          const totalQuantity = updatedDestinations.reduce((sum, d) => sum + (Number(d.totalQuantity) || 0), 0);
+
+          await db.collection("shipments").updateOne(
+            { _id: s._id },
+            { 
+              $set: { 
+                destinations: updatedDestinations,
+                totalWeightKg: parseFloat(totalWeightKg.toFixed(1)),
+                totalQuantity: totalQuantity
+              } 
+            }
+          );
+          shipmentSyncCount++;
+        }
+      }
+      if (shipmentSyncCount > 0) {
+        console.log(`[Migration] Synced ${shipmentSyncCount} shipments with their correct invoice totals`);
       }
     } catch (migError) {
       console.warn("⚠️ [Migration] Failed to run database auto-migration:", migError.message);
