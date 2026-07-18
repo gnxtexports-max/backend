@@ -6,6 +6,47 @@ import { compressBase64DataUrl } from "../utils/compressImage.js";
 import { streamExcelExport, decodeBase64Image } from "../utils/exportToZip.js";
 import { syncSingleVehicle, syncSingleDriver } from "../utils/syncStatuses.js";
 
+const syncInvoicesFromDestinations = async (destinations) => {
+  if (!destinations?.length) return;
+  for (const d of destinations) {
+    if (d.plantData && Object.keys(d.plantData).length > 0) {
+      for (const [plantRef, data] of Object.entries(d.plantData)) {
+        if (!data) continue;
+        const tyre = Number(data.totalTyres) || 0;
+        const tube = Number(data.totalTubes) || 0;
+        const flap = Number(data.totalFlaps) || 0;
+        const weight = Number(data.weightKg) || 0;
+        const quantity = tyre + tube + flap;
+
+        const query = { plantReferenceNumber: plantRef };
+        if (d.invoiceIds?.length) {
+          query._id = { $in: d.invoiceIds };
+        }
+        await Invoice.updateMany(query, {
+          tyre,
+          tube,
+          flap,
+          weight,
+          quantity
+        });
+      }
+    } else {
+      const tyre = Number(d.totalTyres) || 0;
+      const tube = Number(d.totalTubes) || 0;
+      const flap = Number(d.totalFlaps) || 0;
+      const weight = Number(d.weightKg) || 0;
+      const quantity = tyre + tube + flap;
+
+      if (d.invoiceIds?.length) {
+        await Invoice.updateMany(
+          { _id: { $in: d.invoiceIds } },
+          { tyre, tube, flap, weight, quantity }
+        );
+      }
+    }
+  }
+};
+
 /* ─────────────────────────────────────────────────
    POST /api/shipments
    Create a new shipment
@@ -60,10 +101,11 @@ export const createShipment = async (req, res) => {
         customerName,
         deliveryLocation,
         invoiceIds: d.invoiceIds || [],
+        plantData: d.plantData || {},
         totalTyres: d.totalTyres || 0,
         totalTubes: d.totalTubes || 0,
         totalFlaps: d.totalFlaps || 0,
-        weightKg: d.weightKg || 0,
+        weightKg: Number(d.weightKg) || 0,
       };
     }));
 
@@ -79,6 +121,9 @@ export const createShipment = async (req, res) => {
     });
 
     await shipment.save();
+
+    // Sync Tyre/Tube/Flap/Weight values to the Invoice documents in the database
+    await syncInvoicesFromDestinations(destinationDocs);
 
     // Mark selected invoices as Assigned
     const allPlantNumbers = destinationDocs.reduce((acc, dest) => {
@@ -112,7 +157,10 @@ export const createShipment = async (req, res) => {
     await syncSingleVehicle(vehicle._id);
     await syncSingleDriver(driver._id);
 
-    if (req.io) req.io.emit("shipments:changed");
+    if (req.io) {
+      req.io.emit("shipments:changed");
+      req.io.emit("invoices:changed");
+    }
 
     res.status(201).json({ success: true, message: "Shipment created", data: shipment });
   } catch (err) {
@@ -571,10 +619,11 @@ export const updateShipment = async (req, res) => {
           customerName,
           deliveryLocation,
           invoiceIds: d.invoiceIds || [],
+          plantData: d.plantData || {},
           totalTyres: d.totalTyres || 0,
           totalTubes: d.totalTubes || 0,
           totalFlaps: d.totalFlaps || 0,
-          weightKg: d.weightKg || 0,
+          weightKg: Number(d.weightKg) || 0,
           totalQuantity: (d.totalTyres || 0) + (d.totalTubes || 0) + (d.totalFlaps || 0),
         };
       }));
@@ -631,6 +680,9 @@ export const updateShipment = async (req, res) => {
           updateData
         );
       }
+
+      // Sync Tyre/Tube/Flap/Weight values to the Invoice documents in the database
+      await syncInvoicesFromDestinations(resolvedDests);
     }
 
     const shipment = await Shipment.findByIdAndUpdate(req.params.id, update, { returnDocument: "after" })
@@ -717,10 +769,23 @@ export const deleteShipment = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const getInvoicesByPlant = async (req, res) => {
   try {
-    const invoices = await Invoice.find({
+    const { includeInvoiceIds } = req.query;
+    const query = {
       plantReferenceNumber: req.params.plantRef,
-      status: { $in: ["Pending", "Returned - Awaiting"] },
-    })
+    };
+
+    const statusFilter = ["Pending", "Returned - Awaiting"];
+    if (includeInvoiceIds) {
+      const ids = includeInvoiceIds.split(",").map(id => id.trim()).filter(Boolean);
+      query.$or = [
+        { status: { $in: statusFilter } },
+        { _id: { $in: ids } }
+      ];
+    } else {
+      query.status = { $in: statusFilter };
+    }
+
+    const invoices = await Invoice.find(query)
       .select("invoiceNumber invoiceDate status location customerName plantReferenceNumber weight quantity tyre tube flap")
       .sort({ invoiceDate: -1 })
       .lean();

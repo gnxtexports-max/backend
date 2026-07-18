@@ -91,6 +91,7 @@ const destinationSchema = new mongoose.Schema(
     deliveryLocation: { type: String, trim: true, default: "" },   // district from Invoice
     // Invoice IDs linked from Invoice collection
     invoiceIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "Invoice" }],
+    plantData: { type: mongoose.Schema.Types.Mixed, default: {} },
     totalTyres: { type: Number, default: 0, min: 0 },
     totalTubes: { type: Number, default: 0, min: 0 },
     totalFlaps: { type: Number, default: 0, min: 0 },

@@ -1,6 +1,7 @@
 
 import XLSX from "xlsx";
 import Invoice from "../models/invoice.model.js";
+import Shipment from "../models/shipment.model.js";
 import { mapExcelRowToInvoice, validateSheetColumns, resolveHeaderKeys } from "../utils/mapInvoice.js";
 
 const parseDate = (value) => {
@@ -54,39 +55,39 @@ export const uploadInvoiceSheet = async (req, res) => {
 
     let insertedCount = 0;
 
-try {
+    try {
 
-  const inserted = await Invoice.insertMany(cleanData, {
-    ordered: false,
-  });
+      const inserted = await Invoice.insertMany(cleanData, {
+        ordered: false,
+      });
 
-  insertedCount = inserted.length;
+      insertedCount = inserted.length;
 
-} catch (error) {
+    } catch (error) {
 
-  // Ignore duplicate errors
-  if (error.writeErrors) {
+      // Ignore duplicate errors
+      if (error.writeErrors) {
 
-    insertedCount =
-      error.result?.result?.nInserted || 0;
+        insertedCount =
+          error.result?.result?.nInserted || 0;
 
-  } else {
-    throw error;
-  }
-}
+      } else {
+        throw error;
+      }
+    }
 
-if (req.io) req.io.emit("invoices:changed");
+    if (req.io) req.io.emit("invoices:changed");
 
-res.json({
-  success: true,
-  data: {
-    invoicesAdded: insertedCount,
-    skippedRows: cleanData.length - insertedCount,
-    uniquePlants: new Set(
-      cleanData.map(i => i.plantReferenceNumber)
-    ).size,
-  },
-});
+    res.json({
+      success: true,
+      data: {
+        invoicesAdded: insertedCount,
+        skippedRows: cleanData.length - insertedCount,
+        uniquePlants: new Set(
+          cleanData.map(i => i.plantReferenceNumber)
+        ).size,
+      },
+    });
 
 
   } catch (err) {
@@ -231,12 +232,12 @@ export const getInvoices = async (req, res) => {
 
   } catch (error) {
 
-  console.error(error);
+    console.error(error);
 
-  res.status(500).json({
-    success: false,
-    message: error.message,
-  });
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 }
 
@@ -371,7 +372,7 @@ export const getInvoicesByPlant = async (req, res) => {
 export const getInvoiceHistory = async (req, res) => {
   try {
     let { search = "", page = 1, limit = 15 } = req.query;
-    page  = Number(page);
+    page = Number(page);
     limit = Number(limit);
 
     const oneMinuteAgo = new Date(Date.now() - 1 * 60 * 1000);
@@ -402,8 +403,8 @@ export const getInvoiceHistory = async (req, res) => {
         {
           $or: [
             { plantReferenceNumber: { $regex: search, $options: "i" } },
-            { customerName:         { $regex: search, $options: "i" } },
-            { invoiceNumber:        { $regex: search, $options: "i" } },
+            { customerName: { $regex: search, $options: "i" } },
+            { invoiceNumber: { $regex: search, $options: "i" } },
           ]
         }
       ];
@@ -443,9 +444,9 @@ export const getInvoiceHistory = async (req, res) => {
     });
 
     const groupedData = Array.from(groupedMap.values());
-    const total       = groupedData.length;
-    const totalPages  = Math.ceil(total / limit);
-    const paginated   = groupedData.slice((page - 1) * limit, page * limit);
+    const total = groupedData.length;
+    const totalPages = Math.ceil(total / limit);
+    const paginated = groupedData.slice((page - 1) * limit, page * limit);
 
     res.status(200).json({
       success: true,
@@ -596,6 +597,46 @@ export const updateInvoice = async (req, res) => {
 
     if (req.io) req.io.emit("invoices:changed");
 
+    // Recalculate and update totals on all shipments that contain this invoice
+    try {
+      const shipmentsToSync = await Shipment.find({ "destinations.invoiceIds": updated._id });
+      for (const s of shipmentsToSync) {
+        let modified = false;
+        const updatedDestinations = await Promise.all((s.destinations || []).map(async (d) => {
+          if (d.invoiceIds && d.invoiceIds.some(id => id.toString() === updated._id.toString())) {
+            const invoices = await Invoice.find({ _id: { $in: d.invoiceIds } }).lean();
+            if (invoices.length > 0) {
+              const totalWeight = invoices.reduce((sum, inv) => sum + (Number(inv.weight) || 0), 0);
+              const totalTyres = invoices.reduce((sum, inv) => sum + (Number(inv.tyre) || 0), 0);
+              const totalTubes = invoices.reduce((sum, inv) => sum + (Number(inv.tube) || 0), 0);
+              const totalFlaps = invoices.reduce((sum, inv) => sum + (Number(inv.flap) || 0), 0);
+              const totalQuantity = totalTyres + totalTubes + totalFlaps;
+
+              d.weightKg = parseFloat(totalWeight.toFixed(1));
+              d.totalTyres = totalTyres;
+              d.totalTubes = totalTubes;
+              d.totalFlaps = totalFlaps;
+              d.totalQuantity = totalQuantity;
+              modified = true;
+            }
+          }
+          return d;
+        }));
+
+        if (modified) {
+          s.destinations = updatedDestinations;
+          s.totalWeightKg = parseFloat(updatedDestinations.reduce((sum, d) => sum + (Number(d.weightKg) || 0), 0).toFixed(1));
+          s.totalQuantity = updatedDestinations.reduce((sum, d) => sum + (Number(d.totalQuantity) || 0), 0);
+          await s.save();
+        }
+      }
+      if (shipmentsToSync.length > 0 && req.io) {
+        req.io.emit("shipments:changed");
+      }
+    } catch (syncErr) {
+      console.error("Failed to sync shipments after invoice edit:", syncErr);
+    }
+
     res.json({
       success: true,
       message: "Invoice updated successfully",
@@ -608,4 +649,4 @@ export const updateInvoice = async (req, res) => {
       message: error.message || "Failed to update invoice",
     });
   }
-};
+};
