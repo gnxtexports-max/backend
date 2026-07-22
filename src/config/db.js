@@ -120,6 +120,15 @@ const connectDB = async () => {
       if (shipmentSyncCount > 0) {
         console.log(`[Migration] Synced ${shipmentSyncCount} shipments with their correct invoice totals`);
       }
+
+      // 4. Invoices: Rename status "Returned - Awaiting" to "Reassignment"
+      const statusRes = await db.collection("invoices").updateMany(
+        { status: "Returned - Awaiting" },
+        { $set: { status: "Reassignment" } }
+      );
+      if (statusRes.modifiedCount > 0) {
+        console.log(`[Migration] Migrated ${statusRes.modifiedCount} invoices (status 'Returned - Awaiting' -> 'Reassignment')`);
+      }
     } catch (migError) {
       console.warn("⚠️ [Migration] Failed to run database auto-migration:", migError.message);
     }

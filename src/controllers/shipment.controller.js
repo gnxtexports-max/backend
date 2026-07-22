@@ -147,7 +147,7 @@ export const createShipment = async (req, res) => {
       // Prevent duplicate assignment if UI was out of sync
       const alreadyAssigned = await Invoice.find({
         plantReferenceNumber: { $in: allPlantNumbers },
-        status: { $nin: ["Pending", "Returned - Awaiting"] }
+        status: { $nin: ["Pending", "Reassignment"] }
       }).lean();
 
       if (alreadyAssigned.length > 0) {
@@ -788,7 +788,7 @@ export const getInvoicesByPlant = async (req, res) => {
       plantReferenceNumber: req.params.plantRef,
     };
 
-    const statusFilter = ["Pending", "Returned - Awaiting"];
+    const statusFilter = ["Pending", "Reassignment"];
     if (includeInvoiceIds) {
       const ids = includeInvoiceIds.split(",").map(id => id.trim()).filter(Boolean);
       query.$or = [
@@ -847,7 +847,7 @@ export const getNextShipmentId = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const getPlantNumbers = async (req, res) => {
   try {
-    const invoices = await Invoice.find({ status: { $in: ["Pending", "Returned - Awaiting"] } }).select("plantReferenceNumber customerName").lean();
+    const invoices = await Invoice.find({ status: { $in: ["Pending", "Reassignment"] } }).select("plantReferenceNumber customerName").lean();
     const plantMap = new Map();
     invoices.forEach((inv) => {
       if (inv.plantReferenceNumber) {
@@ -911,7 +911,7 @@ export const getRelatedPlants = async (req, res) => {
       plantReferenceNumber: { $ne: plantRef },
       customerName: refInvoice.customerName,
       location: refInvoice.location,
-      status: { $in: ["Pending", "Returned - Awaiting"] }
+      status: { $in: ["Pending", "Reassignment"] }
     });
 
     res.status(200).json({ success: true, data: related.sort() });
