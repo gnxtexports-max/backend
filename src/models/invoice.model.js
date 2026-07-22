@@ -74,6 +74,24 @@ const invoiceSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    cancellationReason: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    beforeDispatchRemarks: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
+    afterDispatchRemarks: {
+      type: String,
+      trim: true,
+      default: "",
+    },
   },
   { timestamps: true }
 );

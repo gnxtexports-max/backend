@@ -8,7 +8,8 @@ import {
   deleteInvoice,
   getInvoiceHistory,
   addInvoice,
-  updateInvoice
+  updateInvoice,
+  updateInvoiceRemarks
 } from "../controllers/invoice.controller.js";
 import { upload } from "../middleware/upload.middleware.js";
 import { authenticate, requirePermission, requireSuperAdmin } from "../middleware/auth.middleware.js";
@@ -32,6 +33,8 @@ router.get("/", requirePermission("Invoices", "view"), getInvoices);
 router.get("/history", requirePermission("Invoices", "view"), getInvoiceHistory);
 
 router.patch("/:plantId/status", requirePermission("Invoices", "edit"), updateInvoiceStatus);
+
+router.patch("/:invoiceId/remarks", requirePermission("Invoices", "edit"), updateInvoiceRemarks);
 
 router.patch(
   "/:plantId/check/:invoiceNumber",

@@ -253,38 +253,6 @@ export const getShipmentStats = async (req, res) => {
     });
 
     // ── Completed Invoices Historical Ledger Redesign (LR-Centered Grouping) ──
-    // Extract all plant reference numbers from all completed destinations in historical shipments
-    const allPlantRefNos = [];
-    historicalShipments.forEach((s) => {
-      (s.destinations || []).forEach((dest) => {
-        if (!["Delivered", "Closed"].includes(dest.status)) return;
-        if (dest.plantReferenceNumber) {
-          const refs = dest.plantReferenceNumber.split(",").map(p => p.trim()).filter(Boolean);
-          allPlantRefNos.push(...refs);
-        }
-      });
-    });
-
-    // Fetch all matching invoices from DB in one query to avoid N+1 queries
-    let matchedInvoices = [];
-    if (allPlantRefNos.length > 0) {
-      matchedInvoices = await Invoice.find({
-        plantReferenceNumber: { $in: allPlantRefNos }
-      }).lean();
-    }
-
-    // Map plantReferenceNumber -> list of Invoices
-    const invoiceMapByPlant = new Map();
-    matchedInvoices.forEach((inv) => {
-      const plantRef = inv.plantReferenceNumber;
-      if (plantRef) {
-        if (!invoiceMapByPlant.has(plantRef)) {
-          invoiceMapByPlant.set(plantRef, []);
-        }
-        invoiceMapByPlant.get(plantRef).push(inv);
-      }
-    });
-
     const ledgerRecords = [];
     historicalShipments.forEach((s) => {
       (s.destinations || []).forEach((dest) => {
@@ -294,9 +262,7 @@ export const getShipmentStats = async (req, res) => {
         const hasPod = !!(dest.podImages?.length > 0 || dest.podReceiverName || dest.podRemarks);
         const deliveryCompleteDate = s.deliveryDate || dest.updatedAt || s.updatedAt || s.createdAt;
 
-        // Resolve associated invoices by checking both:
-        // 1. dest.invoiceIds (populated from DB)
-        // 2. invoices matching the plantReferenceNumber list
+        // Resolve associated invoices by checking dest.invoiceIds (populated from DB)
         const resolvedInvoicesMap = new Map();
 
         (dest.invoiceIds || []).forEach((inv) => {
@@ -311,24 +277,6 @@ export const getShipmentStats = async (req, res) => {
               status: inv.status,
             });
           }
-        });
-
-        const refs = (dest.plantReferenceNumber || "").split(",").map(p => p.trim()).filter(Boolean);
-        refs.forEach((ref) => {
-          const invList = invoiceMapByPlant.get(ref) || [];
-          invList.forEach((inv) => {
-            if (inv && inv.invoiceNumber) {
-              resolvedInvoicesMap.set(inv.invoiceNumber, {
-                _id: inv._id,
-                invoiceNumber: inv.invoiceNumber,
-                invoiceDate: inv.invoiceDate,
-                plantReferenceNumber: inv.plantReferenceNumber,
-                customerName: inv.customerName,
-                location: inv.location,
-                status: inv.status,
-              });
-            }
-          });
         });
 
         const invoicesList = Array.from(resolvedInvoicesMap.values());

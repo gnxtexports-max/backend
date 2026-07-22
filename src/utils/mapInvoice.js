@@ -168,16 +168,23 @@ export const mapExcelRowToInvoice = (row, resolvedKeys) => {
     return isNaN(num) ? 0 : num;
   };
 
+  const tyre = parseNumber(getValue(resolvedKeys.tyre));
+  const tube = parseNumber(getValue(resolvedKeys.tube));
+  const flap = parseNumber(getValue(resolvedKeys.flap));
+  const rawQty = parseNumber(getValue(resolvedKeys.quantity));
+  const itemSum = tyre + tube + flap;
+  const quantity = itemSum > 0 ? itemSum : rawQty;
+
   return {
     plantReferenceNumber: String(getValue(resolvedKeys.plantReferenceNumber)).trim(),
     customerName: String(getValue(resolvedKeys.customerName)).trim(),
     invoiceNumber: String(getValue(resolvedKeys.invoiceNumber)).trim(),
     invoiceDate: normalizeDate(getValue(resolvedKeys.invoiceDate)),
     location: String(getValue(resolvedKeys.location)).trim(),
-    quantity: parseNumber(getValue(resolvedKeys.quantity)),
+    quantity,
     weight: parseNumber(getValue(resolvedKeys.weight)),
-    tyre: parseNumber(getValue(resolvedKeys.tyre)),
-    tube: parseNumber(getValue(resolvedKeys.tube)),
-    flap: parseNumber(getValue(resolvedKeys.flap)),
+    tyre,
+    tube,
+    flap,
   };
 };

@@ -141,19 +141,11 @@ export const getInvoices = async (req, res) => {
       query.status = status;
     }
 
-    // ACTIVE FILTER: exclude Delivered and Cancelled invoices that are older than 1 minute
-    // (they have moved to history) unless all=true is passed
+    // ACTIVE FILTER: keep Delivered invoices on main page (as requested by client)
+    // Only exclude Cancelled invoices older than 1 minute unless all=true is passed
     if (all !== "true") {
       const oneMinuteAgo = new Date(Date.now() - 1 * 60 * 1000);
       query.$nor = [
-        {
-          status: "Delivered",
-          $or: [
-            { deliveredAt: { $lt: oneMinuteAgo } },
-            { deliveredAt: null, updatedAt: { $lt: oneMinuteAgo } },
-            { deliveredAt: { $exists: false }, updatedAt: { $lt: oneMinuteAgo } }
-          ]
-        },
         {
           status: "Cancelled",
           $or: [
@@ -202,6 +194,9 @@ export const getInvoices = async (req, res) => {
         tyre: inv.tyre || 0,
         tube: inv.tube || 0,
         flap: inv.flap || 0,
+        cancellationReason: inv.cancellationReason || "",
+        beforeDispatchRemarks: inv.beforeDispatchRemarks || "",
+        afterDispatchRemarks: inv.afterDispatchRemarks || "",
       });
     });
 
@@ -244,7 +239,7 @@ export const getInvoices = async (req, res) => {
 export const updateInvoiceStatus = async (req, res) => {
   try {
     const { plantId } = req.params;
-    const { status } = req.body;
+    const { status, cancellationReason, reason } = req.body;
 
     // Stamp deliveredAt when status becomes Delivered or cancelledAt when Cancelled
     const updateData = { status };
@@ -254,6 +249,9 @@ export const updateInvoiceStatus = async (req, res) => {
     } else if (status === "Cancelled") {
       updateData.cancelledAt = new Date();
       updateData.deliveredAt = null;
+      if (cancellationReason || reason) {
+        updateData.cancellationReason = (cancellationReason || reason).trim();
+      }
     } else {
       // Reset stamps if status reverts (e.g., back to Assigned/Pending)
       updateData.deliveredAt = null;
@@ -492,17 +490,25 @@ export const addInvoice = async (req, res) => {
       });
     }
 
+    const tyreVal = Number(tyre) || 0;
+    const tubeVal = Number(tube) || 0;
+    const flapVal = Number(flap) || 0;
+    const itemSum = tyreVal + tubeVal + flapVal;
+    const computedQty = itemSum > 0 ? itemSum : (Number(quantity) || 0);
+
     const newInvoice = new Invoice({
       plantReferenceNumber: plantNumber.trim(),
       customerName: customerName.trim(),
       location: location?.trim() || "",
       invoiceNumber: invoiceNumber.trim(),
       invoiceDate: parsedDate,
-      quantity: Number(quantity) || 0,
+      quantity: computedQty,
       weight: Number(weight) || 0,
-      tyre: Number(tyre) || 0,
-      tube: Number(tube) || 0,
-      flap: Number(flap) || 0,
+      tyre: tyreVal,
+      tube: tubeVal,
+      flap: flapVal,
+      beforeDispatchRemarks: req.body.beforeDispatchRemarks?.trim() || "",
+      afterDispatchRemarks: req.body.afterDispatchRemarks?.trim() || "",
       status: "Pending",
     });
 
@@ -538,6 +544,8 @@ export const updateInvoice = async (req, res) => {
       tyre,
       tube,
       flap,
+      beforeDispatchRemarks,
+      afterDispatchRemarks,
     } = req.body;
 
     if (!plantNumber || !customerName || !invoiceNumber || !invoiceDate) {
@@ -571,20 +579,30 @@ export const updateInvoice = async (req, res) => {
       });
     }
 
+    const tyreVal = Number(tyre) || 0;
+    const tubeVal = Number(tube) || 0;
+    const flapVal = Number(flap) || 0;
+    const itemSum = tyreVal + tubeVal + flapVal;
+    const computedQty = itemSum > 0 ? itemSum : (Number(quantity) || 0);
+
+    const updateFields = {
+      plantReferenceNumber: plantNumber.trim(),
+      customerName: customerName.trim(),
+      location: location?.trim() || "",
+      invoiceNumber: invoiceNumber.trim(),
+      invoiceDate: parsedDate,
+      quantity: computedQty,
+      weight: Number(weight) || 0,
+      tyre: tyreVal,
+      tube: tubeVal,
+      flap: flapVal,
+    };
+    if (beforeDispatchRemarks !== undefined) updateFields.beforeDispatchRemarks = String(beforeDispatchRemarks).trim();
+    if (afterDispatchRemarks !== undefined) updateFields.afterDispatchRemarks = String(afterDispatchRemarks).trim();
+
     const updated = await Invoice.findByIdAndUpdate(
       invoiceId,
-      {
-        plantReferenceNumber: plantNumber.trim(),
-        customerName: customerName.trim(),
-        location: location?.trim() || "",
-        invoiceNumber: invoiceNumber.trim(),
-        invoiceDate: parsedDate,
-        quantity: Number(quantity) || 0,
-        weight: Number(weight) || 0,
-        tyre: Number(tyre) || 0,
-        tube: Number(tube) || 0,
-        flap: Number(flap) || 0,
-      },
+      updateFields,
       { returnDocument: 'after' }
     );
 
@@ -648,5 +666,24 @@ export const updateInvoice = async (req, res) => {
       success: false,
       message: error.message || "Failed to update invoice",
     });
+  }
+};
+
+export const updateInvoiceRemarks = async (req, res) => {
+  try {
+    const { invoiceId } = req.params;
+    const { beforeDispatchRemarks, afterDispatchRemarks } = req.body;
+
+    const updateData = {};
+    if (beforeDispatchRemarks !== undefined) updateData.beforeDispatchRemarks = String(beforeDispatchRemarks).trim();
+    if (afterDispatchRemarks !== undefined) updateData.afterDispatchRemarks = String(afterDispatchRemarks).trim();
+
+    const updated = await Invoice.findByIdAndUpdate(invoiceId, updateData, { new: true });
+    if (!updated) return res.status(404).json({ success: false, message: "Invoice not found" });
+
+    if (req.io) req.io.emit("invoices:changed");
+    res.json({ success: true, message: "Remarks updated", data: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 };

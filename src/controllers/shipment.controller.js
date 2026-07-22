@@ -64,6 +64,10 @@ export const createShipment = async (req, res) => {
     if (!destinations?.length) {
       return res.status(400).json({ success: false, message: "At least one destination is required" });
     }
+    const totalInvoicesCount = destinations.reduce((sum, d) => sum + (d.invoiceIds?.length || 0), 0);
+    if (totalInvoicesCount > 9) {
+      return res.status(400).json({ success: false, message: `Maximum 9 invoices per shipment allowed. You selected ${totalInvoicesCount} invoices.` });
+    }
     if (!vehicleId) return res.status(400).json({ success: false, message: "Vehicle is required" });
     if (!driverId) return res.status(400).json({ success: false, message: "Driver is required" });
 
@@ -577,6 +581,10 @@ export const updateShipment = async (req, res) => {
 
     // ── Destinations ────────────────────────────────
     if (destinations?.length) {
+      const totalInvoicesCount = destinations.reduce((sum, d) => sum + (d.invoiceIds?.length || 0), 0);
+      if (totalInvoicesCount > 9) {
+        return res.status(400).json({ success: false, message: `Maximum 9 invoices per shipment allowed. You selected ${totalInvoicesCount} invoices.` });
+      }
       let nextSeq = null;
       const year = new Date().getFullYear();
       const prefix = `LR-${year}-`;
