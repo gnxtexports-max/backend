@@ -46,9 +46,11 @@ const corsOrigin = function (origin, cb) {
   const allowed = [
     "http://localhost:5173",
     "http://localhost:5000",
+    "http://localhost:5432",
     "https://gnxt.vercel.app",
     "https://backend-zm55.onrender.com",
     "https://www.gnxt.co.in",
+    "https://api.gnxt.co.in",
     ...envOrigins,
   ];
   if (allowed.includes(origin)) return cb(null, true);
@@ -202,7 +204,7 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
 /* ── Start ─────────────────────────────────────── */
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5432;
 
 httpServer.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
