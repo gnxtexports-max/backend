@@ -15,6 +15,8 @@ process.on("unhandledRejection", (reason) => {
   console.error("Unhandled Rejection:", reason);
 });
 
+const FALLBACK_ATLAS_URI = "mongodb+srv://gnxt_admin:gnxt%40123@cluster0.zkzxzxo.mongodb.net/gnxt?retryWrites=true&w=majority&appName=Cluster0";
+
 const connectDB = async () => {
   try {
     // Suppress MongoDB error events to prevent process crashes
@@ -22,10 +24,23 @@ const connectDB = async () => {
       console.warn("⚠️ MongoDB connection error suppressed:", err.message.substring(0, 100));
     });
 
-    await mongoose.connect(process.env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 10000,
-    });
-    console.log("MongoDB Connected",process.env.MONGODB_URI);
+    const targetUri = process.env.MONGODB_URI || FALLBACK_ATLAS_URI;
+    try {
+      await mongoose.connect(targetUri, {
+        serverSelectionTimeoutMS: 10000,
+      });
+      console.log("MongoDB Connected:", targetUri.includes("mongodb+srv") ? "MongoDB Atlas Cloud" : targetUri);
+    } catch (primaryErr) {
+      if (targetUri !== FALLBACK_ATLAS_URI && (primaryErr.message.includes("ECONNREFUSED") || primaryErr.message.includes("127.0.0.1") || primaryErr.message.includes("localhost"))) {
+        console.warn("⚠️ Local MongoDB connection refused (ECONNREFUSED). Falling back to MongoDB Atlas Cloud...");
+        await mongoose.connect(FALLBACK_ATLAS_URI, {
+          serverSelectionTimeoutMS: 10000,
+        });
+        console.log("MongoDB Connected to MongoDB Atlas Cloud (Fallback)");
+      } else {
+        throw primaryErr;
+      }
+    }
     await autoSeedSuperAdmin();
 
     // Run self-healing migration for glap -> flap, totalGlaps -> totalFlaps, and sync shipment totals with invoices
