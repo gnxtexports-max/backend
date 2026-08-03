@@ -48,6 +48,7 @@ const corsOrigin = function (origin, cb) {
     "http://localhost:5000",
     "https://gnxt.vercel.app",
     "https://backend-zm55.onrender.com",
+    "https://www.gnxt.co.in",
     ...envOrigins,
   ];
   if (allowed.includes(origin)) return cb(null, true);

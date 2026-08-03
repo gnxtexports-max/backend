@@ -13,23 +13,42 @@ const expenseSchema = new mongoose.Schema(
     driverName:  { type: String, trim: true, default: "" },
     shipmentId:  { type: mongoose.Schema.Types.ObjectId, ref: "Shipment" },
 
+    // Category: "dispatch" (Shipment Based) or "maintenance" (Vehicle Based)
+    category: {
+      type: String,
+      enum: ["dispatch", "maintenance"],
+      default: "dispatch",
+    },
     items: [
       {
         expenseType: {
           type: String,
           enum: [
+            // Dispatch Types
             "Fuel",
             "Toll",
-            "Maintenance",
+            "Driver",
+            "Market Vehicle",
+            "Overtime",
+            "Miscellaneous",
+            "MVD Penalty",
             "Loading/Unloading",
             "Driver Allowance",
-            "Miscellaneous",
+            "Maintenance",
+            // Maintenance Types
+            "Insurance",
+            "Pollution",
+            "Fitness",
+            "Tax",
+            "Tyre Purchase",
+            "Repair",
           ],
           required: true,
         },
         amount: { type: Number, required: true, min: 0 },
         description: { type: String, trim: true, default: "" },
         liters: { type: Number, min: 0 }, // specifically for Fuel
+        receiptUrl: { type: String, trim: true, default: "" },
       }
     ],
 
@@ -42,6 +61,9 @@ const expenseSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Index for common queries
+expenseSchema.index({ category: 1 });
 
 // Index for common queries
 expenseSchema.index({ tripId: 1 });

@@ -300,7 +300,7 @@ export const getShipmentStats = async (req, res) => {
     });
 
     // Sort LR ledger records in ascending order based on Plant Reference Number
-    ledgerRecords.sort((a, b) => (a.plantReferenceNumber || "").localeCompare(b.plantReferenceNumber || ""));
+    ledgerRecords.sort((a, b) => (a.plantReferenceNumber || "").localeCompare(b.plantReferenceNumber || "", undefined, { numeric: true, sensitivity: "base" }));
 
     // ── Build Timeline Aggregation Trend ──────────────
     let rangeStart = startDate;

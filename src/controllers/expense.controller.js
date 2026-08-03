@@ -13,9 +13,10 @@ import fs from "fs";
  ───────────────────────────────────────────────── */
 export const getExpenses = async (req, res) => {
   try {
-    const { lrNumber, vehicleId, driverId, dateFrom, dateTo, tripId } = req.query;
+    const { lrNumber, vehicleId, driverId, dateFrom, dateTo, tripId, category } = req.query;
     const query = {};
 
+    if (category) query.category = category;
     if (lrNumber) query.lrNumber = { $regex: lrNumber, $options: "i" };
     if (tripId) query.tripId = { $regex: tripId, $options: "i" };
     if (vehicleId) query.vehicleId = vehicleId;
@@ -49,7 +50,7 @@ export const getExpenses = async (req, res) => {
     // Shape response to match what the frontend expects
     const shaped = expenses.map((e) => {
       let resolvedTripId = e.tripId || "";
-      if (!resolvedTripId) {
+      if (!resolvedTripId && e.category !== "maintenance") {
         if (e.shipmentId) {
           resolvedTripId = shipmentMapByRef.get(e.shipmentId.toString()) || "";
         }
@@ -60,6 +61,7 @@ export const getExpenses = async (req, res) => {
 
       return {
         ...e,
+        category: e.category || "dispatch",
         tripId: resolvedTripId,
         vehicleId: e.vehicleNo || e.vehicleId?.toString() || "",
         driverName: e.driverName || "",
@@ -81,11 +83,14 @@ export const getExpenses = async (req, res) => {
 export const createExpense = async (req, res) => {
   try {
     const {
+      category = "dispatch",
       tripId,
-      entries, // Array of { lrNumber, items, date, notes, receiptUrl, paymentMode }
+      entries, // Array of { lrNumber, items, date, notes, receiptUrl, paymentMode, category }
       lrNumber,
       vehicleId,
+      vehicleNo: inputVehicleNo,
       driverId,
+      driverName: inputDriverName,
       items,
       date,
       notes,
@@ -137,20 +142,24 @@ export const createExpense = async (req, res) => {
       const createdExpenses = [];
 
       for (const entry of entries) {
+        const entryCategory = entry.category || category || "dispatch";
         const resolved = await resolveShipmentDetails(entry.lrNumber, tripId);
 
-        let finalVehicleId = resolved.finalVehicleId;
-        let vehicleNo = resolved.vehicleNo;
-        let finalDriverId = resolved.finalDriverId;
-        let driverName = resolved.driverName;
+        let finalVehicleId = resolved.finalVehicleId || vehicleId;
+        let vehicleNo = resolved.vehicleNo || inputVehicleNo || "";
+        let finalDriverId = resolved.finalDriverId || driverId;
+        let driverName = resolved.driverName || inputDriverName || "";
 
         // Fallbacks
-        if (!finalVehicleId && isObjectId(vehicleId)) {
+        if (!vehicleNo && isObjectId(vehicleId)) {
           const v = await Vehicle.findById(vehicleId).select("vehicleNo").lean();
           finalVehicleId = vehicleId;
           vehicleNo = v?.vehicleNo || "";
+        } else if (!vehicleNo && vehicleId) {
+          vehicleNo = vehicleId;
         }
-        if (!finalDriverId && isObjectId(driverId)) {
+
+        if (!driverName && isObjectId(driverId)) {
           const d = await Driver.findById(driverId).select("name").lean();
           finalDriverId = driverId;
           driverName = d?.name || "";
@@ -160,6 +169,7 @@ export const createExpense = async (req, res) => {
         const totalAmount = entryItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 
         const exp = await Expense.create({
+          category: entryCategory,
           tripId: resolved.resolvedTripId || tripId || "",
           lrNumber: entry.lrNumber || "",
           vehicleId: finalVehicleId,
@@ -178,6 +188,7 @@ export const createExpense = async (req, res) => {
 
         createdExpenses.push({
           ...exp.toObject(),
+          category: exp.category || "dispatch",
           vehicleId: exp.vehicleNo || exp.vehicleId?.toString() || "",
           driverName: exp.driverName || "",
           amount: exp.totalAmount !== undefined ? exp.totalAmount : 0,
@@ -194,17 +205,20 @@ export const createExpense = async (req, res) => {
     }
 
     const resolved = await resolveShipmentDetails(lrNumber, tripId);
-    let finalVehicleId = resolved.finalVehicleId;
-    let vehicleNo = resolved.vehicleNo;
-    let finalDriverId = resolved.finalDriverId;
-    let driverName = resolved.driverName;
+    let finalVehicleId = resolved.finalVehicleId || vehicleId;
+    let vehicleNo = resolved.vehicleNo || inputVehicleNo || "";
+    let finalDriverId = resolved.finalDriverId || driverId;
+    let driverName = resolved.driverName || inputDriverName || "";
 
-    if (!finalVehicleId && isObjectId(vehicleId)) {
+    if (!vehicleNo && isObjectId(vehicleId)) {
       const v = await Vehicle.findById(vehicleId).select("vehicleNo").lean();
       finalVehicleId = vehicleId;
       vehicleNo = v?.vehicleNo || "";
+    } else if (!vehicleNo && vehicleId) {
+      vehicleNo = vehicleId;
     }
-    if (!finalDriverId && isObjectId(driverId)) {
+
+    if (!driverName && isObjectId(driverId)) {
       const d = await Driver.findById(driverId).select("name").lean();
       finalDriverId = driverId;
       driverName = d?.name || "";
@@ -213,6 +227,7 @@ export const createExpense = async (req, res) => {
     const totalAmount = items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 
     const expense = await Expense.create({
+      category: category || "dispatch",
       tripId: resolved.resolvedTripId || tripId || "",
       lrNumber: lrNumber || "",
       vehicleId: finalVehicleId,
@@ -347,16 +362,27 @@ export const getExpenseSummary = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const exportExpenses = async (req, res) => {
   try {
-    const { dateFrom, dateTo, vehicleId, driverId, ids, tripIds } = req.query;
+    const { dateFrom, dateTo, vehicleId, driverId, ids, tripIds, category } = req.query;
     const query = {};
+
+    if (category && category !== "all") {
+      query.category = category;
+    }
 
     if (ids) {
       query._id = { $in: ids.split(",") };
     } else if (tripIds) {
-      query.tripId = { $in: tripIds.split(",") };
+      const keysList = tripIds.split(",").map(k => k.trim()).filter(Boolean);
+      query.$or = [
+        { tripId: { $in: keysList } },
+        { vehicleNo: { $in: keysList } },
+        { vehicleId: { $in: keysList } },
+      ];
     } else {
-      if (vehicleId) query.vehicleId = vehicleId;
-      if (driverId) query.driverId = driverId;
+      if (vehicleId && vehicleId !== "all") {
+        query.$or = [{ vehicleId: vehicleId }, { vehicleNo: vehicleId }];
+      }
+      if (driverId && driverId !== "all") query.driverName = driverId;
       if (dateFrom || dateTo) {
         query.date = {};
         if (dateFrom) query.date.$gte = new Date(dateFrom);
@@ -406,11 +432,12 @@ export const exportExpenses = async (req, res) => {
       const shipDetails = shipmentMap.get(exp.tripId) || { customer: "—", location: "—", weight: 0, qty: 0 };
 
       rows.push({
+        category: exp.category === "maintenance" ? "Maintenance" : "Dispatch",
         date: exp.date ? new Date(exp.date).toLocaleDateString("en-IN") : "",
-        tripId: exp.tripId || "",
-        lrNumber: exp.lrNumber || "",
-        vehicleNo: exp.vehicleNo || "",
-        driverName: exp.driverName || "",
+        tripId: exp.tripId || "N/A",
+        lrNumber: exp.lrNumber || "N/A",
+        vehicleNo: exp.vehicleNo || exp.vehicleId || "N/A",
+        driverName: exp.driverName || "N/A",
         customer: shipDetails.customer,
         location: shipDetails.location,
         weight: shipDetails.weight,
@@ -425,6 +452,7 @@ export const exportExpenses = async (req, res) => {
     }
 
     const columns = [
+      { header: "Category", key: "category", width: 15 },
       { header: "Date", key: "date", width: 14 },
       { header: "Trip ID", key: "tripId", width: 20 },
       { header: "LR Number", key: "lrNumber", width: 22 },
