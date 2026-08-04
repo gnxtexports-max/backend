@@ -48,8 +48,8 @@ const corsOrigin = function (origin, cb) {
     "http://localhost:5000",
     "http://localhost:5432",
     "https://gnxt.vercel.app",
-    "https://backend-zm55.onrender.com",
     "https://www.gnxt.co.in",
+    "https://gnxt.co.in",
     "https://api.gnxt.co.in",
     ...envOrigins,
   ];
