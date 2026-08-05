@@ -60,6 +60,9 @@ export const getExpenses = async (req, res) => {
         }
       }
 
+      const baseUrl = `${req.protocol}://${req.get("host")}`;
+      const formattedReceiptUrl = e.receiptUrl ? `${baseUrl}/api/expenses/${e._id}/receipt` : "";
+
       return {
         ...e,
         category: e.category || "dispatch",
@@ -67,6 +70,7 @@ export const getExpenses = async (req, res) => {
         vehicleId: e.vehicleNo || e.vehicleId?.toString() || "",
         driverName: e.driverName || "",
         amount: e.totalAmount !== undefined ? e.totalAmount : (e.amount || 0),
+        receiptUrl: formattedReceiptUrl,
       };
     });
 
@@ -267,6 +271,10 @@ export const getExpenseById = async (req, res) => {
   try {
     const expense = await Expense.findById(req.params.id).lean();
     if (!expense) return res.status(404).json({ success: false, message: "Expense not found" });
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    if (expense.receiptUrl) {
+      expense.receiptUrl = `${baseUrl}/api/expenses/${expense._id}/receipt`;
+    }
     res.status(200).json(expense);
   } catch (err) {
     res.status(500).json({ success: false, message: "Error fetching expense", error: err.message });
@@ -419,6 +427,8 @@ export const exportExpenses = async (req, res) => {
       const itemDescriptions = (exp.items ?? [])
         .map(item => `${item.expenseType || ""}: ₹${item.amount || 0}${item.description ? ` (${item.description})` : ""}`)
         .join("; ");
+
+      const shipDetails = shipmentMap.get(exp.tripId) || { customer: "—", location: "—", weight: 0, qty: 0 };
 
       rows.push({
         category: exp.category === "maintenance" ? "Maintenance" : "Dispatch",
