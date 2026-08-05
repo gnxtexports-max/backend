@@ -18,6 +18,8 @@ import {
 } from "../controllers/shipment.controller.js";
 import { authenticate, requirePermission, requireSuperAdmin } from "../middleware/auth.middleware.js";
 
+const router = express.Router();
+
 // Public media endpoint for POD images
 router.get("/:id/pod/:podIndex", getShipmentPodImage);
 

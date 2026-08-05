@@ -11,6 +11,8 @@ import {
 } from "../controllers/expense.controller.js";
 import { authenticate, requirePermission, requireSuperAdmin } from "../middleware/auth.middleware.js";
 
+const router = express.Router();
+
 // Public media endpoint for expense receipts
 router.get("/:id/receipt", getExpenseReceipt);
 
