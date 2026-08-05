@@ -11,13 +11,13 @@ import {
 } from "../controllers/expense.controller.js";
 import { authenticate, requirePermission, requireSuperAdmin } from "../middleware/auth.middleware.js";
 
-const router = express.Router();
+// Public media endpoint for expense receipts
+router.get("/:id/receipt", getExpenseReceipt);
 
 router.use(authenticate);
 
 router.get("/summary", requirePermission("Expenses", "view"), getExpenseSummary);   // must be before /:id
 router.get("/export", requirePermission("Expenses", "view"), exportExpenses);       // must be before /:id
-router.get("/:id/receipt", requirePermission("Expenses", "view"), getExpenseReceipt); // must be before /:id
 router.get("/", requirePermission("Expenses", "view"), getExpenses);
 router.post("/", requirePermission("Expenses", "create"), createExpense);
 router.get("/:id", requirePermission("Expenses", "view"), getExpenseById);

@@ -5,7 +5,7 @@ import Driver from "../models/Driver.js";
 import { compressBase64DataUrl } from "../utils/compressImage.js";
 import { streamExcelExport, decodeBase64Image } from "../utils/exportToZip.js";
 import { syncSingleVehicle, syncSingleDriver } from "../utils/syncStatuses.js";
-import { uploadBase64ToR2 } from "../services/r2.service.js";
+import { uploadBase64ToR2, fetchImageForExcel } from "../services/r2.service.js";
 
 const syncInvoicesFromDestinations = async (destinations) => {
   if (!destinations?.length) return;
@@ -1109,6 +1109,11 @@ export const getShipmentPodImage = async (req, res) => {
       if (dest.podImages && dest.podImages[idx]) {
         const dataUrl = dest.podImages[idx];
         if (dataUrl.startsWith("http://") || dataUrl.startsWith("https://")) {
+          const imgData = await fetchImageForExcel(dataUrl);
+          if (imgData && imgData.buffer) {
+            res.setHeader("Content-Type", `image/${imgData.extension || "jpeg"}`);
+            return res.send(imgData.buffer);
+          }
           return res.redirect(dataUrl);
         }
         const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
@@ -1124,6 +1129,11 @@ export const getShipmentPodImage = async (req, res) => {
     if (shipment.podImages && shipment.podImages[idx]) {
       const dataUrl = shipment.podImages[idx];
       if (dataUrl.startsWith("http://") || dataUrl.startsWith("https://")) {
+        const imgData = await fetchImageForExcel(dataUrl);
+        if (imgData && imgData.buffer) {
+          res.setHeader("Content-Type", `image/${imgData.extension || "jpeg"}`);
+          return res.send(imgData.buffer);
+        }
         return res.redirect(dataUrl);
       }
       const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);

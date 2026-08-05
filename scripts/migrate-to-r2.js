@@ -8,7 +8,7 @@ import { uploadToR2 } from "../src/services/r2.service.js";
 
 dotenv.config();
 
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/gnxt";
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://gnxt_admin:gnxt%40123@cluster0.zkzxzxo.mongodb.net/gnxt?retryWrites=true&w=majority&appName=Cluster0";
 
 async function migrateData() {
   console.log("Starting Migration to Cloudflare R2...");

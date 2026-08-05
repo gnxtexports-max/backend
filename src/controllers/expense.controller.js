@@ -4,7 +4,7 @@ import Vehicle from "../models/Vehicle.js";
 import Driver from "../models/Driver.js";
 import { streamExcelExport, decodeBase64Image } from "../utils/exportToZip.js";
 import { compressBase64DataUrl } from "../utils/compressImage.js";
-import { uploadBase64ToR2 } from "../services/r2.service.js";
+import { uploadBase64ToR2, fetchImageForExcel } from "../services/r2.service.js";
 import path from "path";
 import fs from "fs";
 
@@ -485,6 +485,11 @@ export const getExpenseReceipt = async (req, res) => {
     }
 
     if (expense.receiptUrl.startsWith("http://") || expense.receiptUrl.startsWith("https://")) {
+      const imgData = await fetchImageForExcel(expense.receiptUrl);
+      if (imgData && imgData.buffer) {
+        res.setHeader("Content-Type", `image/${imgData.extension || "jpeg"}`);
+        return res.send(imgData.buffer);
+      }
       return res.redirect(expense.receiptUrl);
     }
 
