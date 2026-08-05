@@ -233,9 +233,24 @@ export const getShipments = async (req, res) => {
       return { ...s, destinations };
     }));
 
+    const formatted = enriched.map(s => {
+      const baseUrl = `${req.protocol}://${req.get("host")}`;
+      const destinations = (s.destinations ?? []).map((dest) => {
+        const podImages = (dest.podImages ?? []).map((img, idx) => {
+          if (!img) return "";
+          if (img.startsWith("http://") || img.startsWith("https://") || img.startsWith("data:")) {
+            return `${baseUrl}/api/shipments/${s.shipmentId}/pod/${idx}`;
+          }
+          return img;
+        });
+        return { ...dest, podImages };
+      });
+      return { ...s, destinations };
+    });
+
     res.status(200).json({
       success: true,
-      data: enriched,
+      data: formatted,
       pagination: { total, page: Number(page), limit: Number(limit), totalPages: Math.ceil(total / Number(limit)) },
     });
   } catch (err) {
@@ -280,6 +295,18 @@ export const getShipmentById = async (req, res) => {
     }));
 
     shipment.destinations = enrichedDestinations;
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    shipment.destinations = (shipment.destinations ?? []).map((dest) => {
+      const podImages = (dest.podImages ?? []).map((img, idx) => {
+        if (!img) return "";
+        if (img.startsWith("http://") || img.startsWith("https://") || img.startsWith("data:")) {
+          return `${baseUrl}/api/shipments/${shipment.shipmentId}/pod/${idx}`;
+        }
+        return img;
+      });
+      return { ...dest, podImages };
+    });
 
     res.status(200).json({ success: true, data: shipment });
   } catch (err) {
@@ -504,6 +531,20 @@ export const updateShipmentPOD = async (req, res) => {
       .populate("driverId", "name phone licenseNumber driverType")
       .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    if (populated?.destinations) {
+      populated.destinations = populated.destinations.map((dest) => {
+        const podImages = (dest.podImages ?? []).map((img, idx) => {
+          if (!img) return "";
+          if (img.startsWith("http://") || img.startsWith("https://") || img.startsWith("data:")) {
+            return `${baseUrl}/api/shipments/${populated.shipmentId}/pod/${idx}`;
+          }
+          return img;
+        });
+        return { ...dest, podImages };
+      });
+    }
 
     res.status(200).json({ success: true, message: "POD updated", data: populated });
   } catch (err) {
