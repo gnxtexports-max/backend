@@ -5,6 +5,7 @@ import Driver from "../models/Driver.js";
 import { compressBase64DataUrl } from "../utils/compressImage.js";
 import { streamExcelExport, decodeBase64Image } from "../utils/exportToZip.js";
 import { syncSingleVehicle, syncSingleDriver } from "../utils/syncStatuses.js";
+import { uploadBase64ToR2 } from "../services/r2.service.js";
 
 const syncInvoicesFromDestinations = async (destinations) => {
   if (!destinations?.length) return;
@@ -311,7 +312,14 @@ export const updateShipmentStatus = async (req, res) => {
       if (podReceiverName !== undefined) dest.podReceiverName = podReceiverName;
       if (podRemarks !== undefined) dest.podRemarks = podRemarks;
       if (podImages !== undefined) {
-        dest.podImages = await Promise.all(podImages.map(img => compressBase64DataUrl(img)));
+        dest.podImages = await Promise.all(
+          podImages.map(async (img, idx) => {
+            if (img && img.startsWith("data:")) {
+              return await uploadBase64ToR2(img, `pod/${shipment.shipmentId}_${dest._id || idx}`);
+            }
+            return img;
+          })
+        );
       }
 
       // Don't regress shipment from Closed back to Delivered
@@ -372,7 +380,16 @@ export const updateShipmentStatus = async (req, res) => {
       ...(status === "Closed" ? {} : {}),
       ...(podReceiverName !== undefined ? { podReceiverName } : {}),
       ...(podRemarks !== undefined ? { podRemarks } : {}),
-      ...(podImages !== undefined ? { podImages: await Promise.all(podImages.map(img => compressBase64DataUrl(img))) } : {}),
+      ...(podImages !== undefined ? {
+        podImages: await Promise.all(
+          podImages.map(async (img, idx) => {
+            if (img && img.startsWith("data:")) {
+              return await uploadBase64ToR2(img, `pod/${req.params.id}_dest_${idx}`);
+            }
+            return img;
+          })
+        )
+      } : {}),
     };
 
     const shipment = await Shipment.findByIdAndUpdate(
@@ -454,13 +471,27 @@ export const updateShipmentPOD = async (req, res) => {
       if (podReceiverName !== undefined) dest.podReceiverName = podReceiverName;
       if (podRemarks !== undefined) dest.podRemarks = podRemarks;
       if (podImages !== undefined) {
-        dest.podImages = await Promise.all(podImages.map(img => compressBase64DataUrl(img)));
+        dest.podImages = await Promise.all(
+          podImages.map(async (img, idx) => {
+            if (img && img.startsWith("data:")) {
+              return await uploadBase64ToR2(img, `pod/${shipment.shipmentId}_${dest._id || idx}`);
+            }
+            return img;
+          })
+        );
       }
     } else {
       if (podReceiverName !== undefined) shipment.podReceiverName = podReceiverName;
       if (podRemarks !== undefined) shipment.podRemarks = podRemarks;
       if (podImages !== undefined) {
-        shipment.podImages = await Promise.all(podImages.map(img => compressBase64DataUrl(img)));
+        shipment.podImages = await Promise.all(
+          podImages.map(async (img, idx) => {
+            if (img && img.startsWith("data:")) {
+              return await uploadBase64ToR2(img, `pod/${shipment.shipmentId}_top_${idx}`);
+            }
+            return img;
+          })
+        );
       }
     }
 
@@ -942,7 +973,19 @@ export const exportShipments = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    // Find max POD images count across all destinations to build dynamic columns
+    let maxPods = 1;
+    for (const s of shipments) {
+      for (const dest of s.destinations ?? []) {
+        if (dest.podImages?.length > maxPods) {
+          maxPods = dest.podImages.length;
+        }
+      }
+      if (s.podImages?.length > maxPods) {
+        maxPods = s.podImages.length;
+      }
+    }
+
     const rows = [];
 
     for (const s of shipments) {
@@ -965,54 +1008,40 @@ export const exportShipments = async (req, res) => {
           returnedDate: s.returnedDate ? new Date(s.returnedDate).toLocaleDateString("en-IN") : "",
           podReceiver: dest.podReceiverName || "",
           podRemarks: dest.podRemarks || "",
-          podImage: "",
         };
 
-        if (dest.podImages?.length) {
-          for (let i = 0; i < dest.podImages.length; i++) {
-            const label = dest.podImages.length === 1 ? "View POD" : `View POD ${i + 1}`;
-            rows.push({
-              ...baseRow,
-              podImage: {
-                label,
-                target: `${baseUrl}/api/shipments/${s.shipmentId}/pod/${i}`,
-                tooltip: `POD: ${s.shipmentId} — ${label}`,
-              },
-            });
-          }
-        } else {
-          rows.push(baseRow);
+        const podImgs = dest.podImages || [];
+        for (let i = 0; i < maxPods; i++) {
+          baseRow[`podImage_${i}`] = podImgs[i] || "";
         }
+        rows.push(baseRow);
       }
 
-      // Shipment-level POD images (legacy / fallback)
-      if (s.podImages?.length) {
-        for (let i = 0; i < s.podImages.length; i++) {
-          const label = s.podImages.length === 1 ? "View POD" : `View POD ${i + 1}`;
-          rows.push({
-            shipmentId: s.shipmentId,
-            status: s.status,
-            vehicleNumber: s.vehicleNumber,
-            driverName: s.driverName,
-            driverPhone: s.driverPhone || "",
-            plantNumber: "(shipment-level)",
-            lrNumber: "",
-            customerName: "",
-            deliveryLocation: "",
-            weightKg: s.totalWeightKg || 0,
-            totalQuantity: s.totalQuantity || 0,
-            dispatchDate: s.dispatchDate ? new Date(s.dispatchDate).toLocaleDateString("en-IN") : "",
-            deliveryDate: s.deliveryDate ? new Date(s.deliveryDate).toLocaleDateString("en-IN") : "",
-            returnedDate: s.returnedDate ? new Date(s.returnedDate).toLocaleDateString("en-IN") : "",
-            podReceiver: s.podReceiverName || "",
-            podRemarks: s.podRemarks || "",
-            podImage: {
-              label,
-              target: `${baseUrl}/api/shipments/${s.shipmentId}/pod/${i}`,
-              tooltip: `POD: ${s.shipmentId} — ${label}`,
-            },
-          });
+      // Shipment-level POD images (legacy / fallback if no destination rows)
+      if ((!s.destinations || s.destinations.length === 0) && s.podImages?.length) {
+        const baseRow = {
+          shipmentId: s.shipmentId,
+          status: s.status,
+          vehicleNumber: s.vehicleNumber,
+          driverName: s.driverName,
+          driverPhone: s.driverPhone || "",
+          plantNumber: "(shipment-level)",
+          lrNumber: "",
+          customerName: "",
+          deliveryLocation: "",
+          weightKg: s.totalWeightKg || 0,
+          totalQuantity: s.totalQuantity || 0,
+          dispatchDate: s.dispatchDate ? new Date(s.dispatchDate).toLocaleDateString("en-IN") : "",
+          deliveryDate: s.deliveryDate ? new Date(s.deliveryDate).toLocaleDateString("en-IN") : "",
+          returnedDate: s.returnedDate ? new Date(s.returnedDate).toLocaleDateString("en-IN") : "",
+          podReceiver: s.podReceiverName || "",
+          podRemarks: s.podRemarks || "",
+        };
+
+        for (let i = 0; i < maxPods; i++) {
+          baseRow[`podImage_${i}`] = s.podImages[i] || "";
         }
+        rows.push(baseRow);
       }
     }
 
@@ -1033,8 +1062,15 @@ export const exportShipments = async (req, res) => {
       { header: "Returned Date", key: "returnedDate", width: 16 },
       { header: "POD Receiver", key: "podReceiver", width: 18 },
       { header: "POD Remarks", key: "podRemarks", width: 20 },
-      { header: "POD Image", key: "podImage", width: 18, type: "link" },
     ];
+
+    if (maxPods <= 1) {
+      columns.push({ header: "POD Image", key: "podImage_0", width: 22, type: "image" });
+    } else {
+      for (let i = 0; i < maxPods; i++) {
+        columns.push({ header: `POD Image ${i + 1}`, key: `podImage_${i}`, width: 22, type: "image" });
+      }
+    }
 
     const dateStr = new Date().toISOString().slice(0, 10);
     await streamExcelExport({
@@ -1072,6 +1108,9 @@ export const getShipmentPodImage = async (req, res) => {
     for (const dest of shipment.destinations ?? []) {
       if (dest.podImages && dest.podImages[idx]) {
         const dataUrl = dest.podImages[idx];
+        if (dataUrl.startsWith("http://") || dataUrl.startsWith("https://")) {
+          return res.redirect(dataUrl);
+        }
         const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
         if (match) {
           const buffer = Buffer.from(match[2], "base64");
@@ -1084,6 +1123,9 @@ export const getShipmentPodImage = async (req, res) => {
     // Check shipment-level images (legacy)
     if (shipment.podImages && shipment.podImages[idx]) {
       const dataUrl = shipment.podImages[idx];
+      if (dataUrl.startsWith("http://") || dataUrl.startsWith("https://")) {
+        return res.redirect(dataUrl);
+      }
       const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
       if (match) {
         const buffer = Buffer.from(match[2], "base64");

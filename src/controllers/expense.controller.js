@@ -4,6 +4,7 @@ import Vehicle from "../models/Vehicle.js";
 import Driver from "../models/Driver.js";
 import { streamExcelExport, decodeBase64Image } from "../utils/exportToZip.js";
 import { compressBase64DataUrl } from "../utils/compressImage.js";
+import { uploadBase64ToR2 } from "../services/r2.service.js";
 import path from "path";
 import fs from "fs";
 
@@ -181,7 +182,7 @@ export const createExpense = async (req, res) => {
           totalAmount,
           date: entry.date ? new Date(entry.date) : new Date(),
           notes: entry.notes || "",
-          receiptUrl: entry.receiptUrl ? await compressBase64DataUrl(entry.receiptUrl) : "",
+          receiptUrl: entry.receiptUrl ? await uploadBase64ToR2(entry.receiptUrl, "receipts/exp") : "",
           paymentMode: entry.paymentMode || paymentMode || "Cash",
           status: "Pending",
         });
@@ -239,7 +240,7 @@ export const createExpense = async (req, res) => {
       totalAmount,
       date: date ? new Date(date) : new Date(),
       notes: notes || "",
-      receiptUrl: receiptUrl ? await compressBase64DataUrl(receiptUrl) : "",
+      receiptUrl: receiptUrl ? await uploadBase64ToR2(receiptUrl, "receipts/exp") : "",
       paymentMode: paymentMode || "Cash",
       status: "Pending",
     });
@@ -287,7 +288,7 @@ export const updateExpense = async (req, res) => {
     if (date) update.date = new Date(date);
     if (notes !== undefined) update.notes = notes;
     if (lrNumber !== undefined) update.lrNumber = lrNumber;
-    if (receiptUrl !== undefined) update.receiptUrl = receiptUrl ? await compressBase64DataUrl(receiptUrl) : "";
+    if (receiptUrl !== undefined) update.receiptUrl = receiptUrl ? await uploadBase64ToR2(receiptUrl, `receipts/exp_${req.params.id}`) : "";
     if (paymentMode !== undefined) update.paymentMode = paymentMode;
     if (status !== undefined) update.status = status;
 
@@ -419,18 +420,6 @@ export const exportExpenses = async (req, res) => {
         .map(item => `${item.expenseType || ""}: ₹${item.amount || 0}${item.description ? ` (${item.description})` : ""}`)
         .join("; ");
 
-      // Receipt hyperlink — points to the existing receipt serving endpoint
-      let receiptLink = "";
-      if (exp.receiptUrl) {
-        receiptLink = {
-          label: "View Receipt",
-          target: `${baseUrl}/api/expenses/${exp._id}/receipt`,
-          tooltip: `Receipt for expense ${exp._id}`,
-        };
-      }
-
-      const shipDetails = shipmentMap.get(exp.tripId) || { customer: "—", location: "—", weight: 0, qty: 0 };
-
       rows.push({
         category: exp.category === "maintenance" ? "Maintenance" : "Dispatch",
         date: exp.date ? new Date(exp.date).toLocaleDateString("en-IN") : "",
@@ -447,7 +436,7 @@ export const exportExpenses = async (req, res) => {
         paymentMode: exp.paymentMode || "",
         status: exp.status || "",
         notes: exp.notes || "",
-        receipt: receiptLink,
+        receipt: exp.receiptUrl || "",
       });
     }
 
@@ -467,7 +456,7 @@ export const exportExpenses = async (req, res) => {
       { header: "Payment Mode", key: "paymentMode", width: 14 },
       { header: "Status", key: "status", width: 12 },
       { header: "Notes", key: "notes", width: 30 },
-      { header: "Receipt", key: "receipt", width: 18, type: "link" },
+      { header: "Receipt", key: "receipt", width: 22, type: "image" },
     ];
 
     const dateStr = new Date().toISOString().slice(0, 10);
@@ -493,6 +482,10 @@ export const getExpenseReceipt = async (req, res) => {
     const expense = await Expense.findById(req.params.id).lean();
     if (!expense || !expense.receiptUrl) {
       return res.status(404).send("Receipt not found");
+    }
+
+    if (expense.receiptUrl.startsWith("http://") || expense.receiptUrl.startsWith("https://")) {
+      return res.redirect(expense.receiptUrl);
     }
 
     if (expense.receiptUrl.startsWith("data:")) {

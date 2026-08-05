@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { fetchImageForExcel, clearImageExportCache } from "../services/r2.service.js";
 
 function cleanup(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
@@ -9,10 +10,11 @@ function cleanup(dir) {
 
 /**
  * Build an ExcelJS workbook from columns/rows config.
- * Cells with type:"link" become clickable hyperlinks.
- * Returns { workbook, hyperlinkCount }.
+ * Supports embedding binary images directly into cells (type: "image")
+ * as well as hyperlinks (type: "link").
+ * Returns { workbook, hyperlinkCount, imageCount }.
  */
-function buildWorkbook(sheetName, columns, rows) {
+async function buildWorkbook(sheetName, columns, rows) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "GNXT";
   workbook.created = new Date();
@@ -22,7 +24,7 @@ function buildWorkbook(sheetName, columns, rows) {
   worksheet.columns = columns.map((c) => ({
     header: c.header,
     key: c.key,
-    width: c.width || 22,
+    width: c.width || (c.type === "image" ? 22 : 22),
   }));
 
   const headerRow = worksheet.getRow(1);
@@ -38,15 +40,22 @@ function buildWorkbook(sheetName, columns, rows) {
       bottom: { style: "thin", color: { argb: "FFBFDBFE" } },
     };
   });
-  headerRow.height = 22;
+  headerRow.height = 24;
 
   let hyperlinkCount = 0;
+  let imageCount = 0;
 
-  for (const rowData of rows) {
+  for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+    const rowData = rows[rIdx];
     const rowValues = {};
+    let hasImageInRow = false;
+
     for (const col of columns) {
       const val = rowData[col.key];
-      if (col.type === "link" && val && typeof val === "object" && val.target) {
+      if (col.type === "image") {
+        hasImageInRow = true;
+        rowValues[col.key] = "";
+      } else if (col.type === "link" && val && typeof val === "object" && val.target) {
         rowValues[col.key] = val.label || "View";
       } else {
         rowValues[col.key] = val !== null && val !== undefined ? val : "";
@@ -54,13 +63,59 @@ function buildWorkbook(sheetName, columns, rows) {
     }
 
     const excelRow = worksheet.addRow(rowValues);
-    excelRow.height = 18;
+    const rowNumber = excelRow.number; // 1-indexed (header is 1)
+    excelRow.height = hasImageInRow ? 75 : 20;
 
     for (let ci = 0; ci < columns.length; ci++) {
       const col = columns[ci];
       const val = rowData[col.key];
 
-      if (col.type === "link" && val && typeof val === "object" && val.target) {
+      if (col.type === "image") {
+        const cell = excelRow.getCell(ci + 1);
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+
+        if (val) {
+          const imgData = await fetchImageForExcel(val);
+          if (imgData && imgData.isPdf) {
+            cell.value = {
+              text: "View PDF Document",
+              hyperlink: val,
+              tooltip: "Open PDF file",
+            };
+            cell.font = {
+              color: { argb: "FF1D4ED8" },
+              underline: true,
+              size: 10,
+            };
+          } else if (imgData && imgData.buffer) {
+            try {
+              const imageId = workbook.addImage({
+                buffer: imgData.buffer,
+                extension: imgData.extension,
+              });
+
+              // Position image inside the cell
+              worksheet.addImage(imageId, {
+                tl: { col: ci, row: rowNumber - 1 },
+                ext: { width: 100, height: 90 },
+                editAs: "oneCell",
+              });
+              cell.value = "";
+              imageCount++;
+            } catch (imgErr) {
+              console.error(`[buildWorkbook] Failed to embed image into Excel cell (${rowNumber}, ${ci + 1}):`, imgErr.message);
+              cell.value = "No Image Available";
+              cell.font = { italic: true, color: { argb: "FF94A3B8" }, size: 10 };
+            }
+          } else {
+            cell.value = "No Image Available";
+            cell.font = { italic: true, color: { argb: "FF94A3B8" }, size: 10 };
+          }
+        } else {
+          cell.value = "No Image Available";
+          cell.font = { italic: true, color: { argb: "FF94A3B8" }, size: 10 };
+        }
+      } else if (col.type === "link" && val && typeof val === "object" && val.target) {
         const cell = excelRow.getCell(ci + 1);
         cell.value = {
           text: val.label || "View",
@@ -85,7 +140,7 @@ function buildWorkbook(sheetName, columns, rows) {
     if (isEven) {
       excelRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
         const col = columns[colNumber - 1];
-        if (!col || col.type !== "link" || !rowData[col.key]?.target) {
+        if (!col || (col.type !== "link" && col.type !== "image")) {
           cell.fill = {
             type: "pattern",
             pattern: "solid",
@@ -105,21 +160,21 @@ function buildWorkbook(sheetName, columns, rows) {
     };
   }
 
-  return { workbook, hyperlinkCount };
+  // Clear export cache
+  clearImageExportCache();
+
+  return { workbook, hyperlinkCount, imageCount };
 }
 
 /**
  * Generate a standalone .xlsx file and stream it to the HTTP response.
- * No ZIP involved — produces a valid Office Open XML spreadsheet.
- * Writes to a temp file first, then streams the raw bytes via pipe
- * to avoid any Express encoding interference with binary data.
  *
  * @param {object} opts
  * @param {import("express").Response} opts.res
- * @param {string} opts.filename       - Download filename (e.g. "Shipment_History.xlsx")
+ * @param {string} opts.filename       - Download filename
  * @param {string} opts.sheetName      - Excel sheet tab name
- * @param {Array<{header:string, key:string, width?:number, type?:"link"|"text"}>} opts.columns
- * @param {Array<Record<string,any>>}  opts.rows   - Row objects. For link cells, value must be {label, target, tooltip?}
+ * @param {Array<{header:string, key:string, width?:number, type?:"link"|"image"|"text"}>} opts.columns
+ * @param {Array<Record<string,any>>}  opts.rows   - Row objects.
  */
 export async function streamExcelExport(opts) {
   const { res, filename, sheetName, columns, rows } = opts;
@@ -127,9 +182,10 @@ export async function streamExcelExport(opts) {
   console.log(`[ExcelExport] Starting export: ${filename}`);
   console.log(`[ExcelExport] Record count: ${rows.length}`);
 
-  const { workbook, hyperlinkCount } = buildWorkbook(sheetName, columns, rows);
+  const { workbook, hyperlinkCount, imageCount } = await buildWorkbook(sheetName, columns, rows);
 
   console.log(`[ExcelExport] Generated row count: ${rows.length + 1} (incl. header)`);
+  console.log(`[ExcelExport] Embedded image count: ${imageCount}`);
   console.log(`[ExcelExport] Hyperlink count: ${hyperlinkCount}`);
 
   const buffer = await workbook.xlsx.writeBuffer();
@@ -162,8 +218,6 @@ export async function streamExcelExport(opts) {
 
 /**
  * Decode a base64 data URL to a Buffer.
- * Input: "data:image/jpeg;base64,/9j/4AAQ..."
- * Output: { buffer: Buffer, ext: ".jpg" }
  */
 export function decodeBase64Image(dataUrl) {
   if (!dataUrl || typeof dataUrl !== "string") return null;
