@@ -10,7 +10,7 @@ import Invoice from "../models/invoice.model.js";
  */
 export const getShipmentStats = async (req, res) => {
   try {
-    const { dateRange, vehicle, driver, dealer, groupBy = "day", startDate: customStart, endDate: customEnd } = req.query;
+    const { dateRange, vehicle, driver, dealer, groupBy = "day", startDate: customStart, endDate: customEnd, fromDate, toDate, dateFrom, dateTo } = req.query;
 
     const query = {};
     const invoiceQuery = {};
@@ -19,8 +19,20 @@ export const getShipmentStats = async (req, res) => {
     let startDate = null;
     let endDate = new Date();
 
+    const startParam = customStart || fromDate || dateFrom;
+    const endParam = customEnd || toDate || dateTo;
+
     // ── Date Range Filter ─────────────────────────────
-    if (dateRange && dateRange !== "all") {
+    if (startParam || endParam) {
+      startDate = startParam ? new Date(startParam) : new Date(0);
+      startDate.setHours(0, 0, 0, 0);
+      endDate = endParam ? new Date(endParam) : new Date();
+      endDate.setHours(23, 59, 59, 999);
+
+      query.createdAt = { $gte: startDate, $lte: endDate };
+      invoiceQuery.deliveredAt = { $gte: startDate, $lte: endDate };
+      expenseQuery.date = { $gte: startDate, $lte: endDate };
+    } else if (dateRange && dateRange !== "all") {
       const now = new Date();
       startDate = new Date();
 
@@ -40,17 +52,6 @@ export const getShipmentStats = async (req, res) => {
       ];
       invoiceQuery.deliveredAt = { $gte: startDate };
       expenseQuery.date = { $gte: startDate };
-    } else if (dateRange === "all") {
-      // Do not restrict date
-    } else if (customStart) {
-      startDate = new Date(customStart);
-      startDate.setHours(0, 0, 0, 0);
-      endDate = customEnd ? new Date(customEnd) : new Date();
-      endDate.setHours(23, 59, 59, 999);
-
-      query.createdAt = { $gte: startDate, $lte: endDate };
-      invoiceQuery.deliveredAt = { $gte: startDate, $lte: endDate };
-      expenseQuery.date = { $gte: startDate, $lte: endDate };
     }
 
     // ── Vehicle Filter ────────────────────────────────
@@ -137,8 +138,14 @@ export const getShipmentStats = async (req, res) => {
     const completedInvoicesCount = completedInvoices.length;
 
     // ── Fetch Historical Completed Data for Detailed Reports ─────────────
-    // Omit date range limitations, but preserve vehicle, driver, and dealer filters
+    // Apply date range limitations as well as vehicle, driver, and dealer filters
     const historicalQuery = {};
+    if (startDate && endDate) {
+      historicalQuery.createdAt = { $gte: startDate, $lte: endDate };
+    } else if (startDate) {
+      historicalQuery.createdAt = { $gte: startDate };
+    }
+
     if (vehicle && vehicle !== "all") {
       historicalQuery.vehicleNumber = vehicle;
     }
@@ -156,16 +163,21 @@ export const getShipmentStats = async (req, res) => {
 
     const historicalShipmentIds = historicalShipments.map((s) => s.shipmentId);
 
-    // Fetch all historical expenses associated with these shipments/filters
+    // Fetch historical expenses associated with these shipments/filters within the date range
     const historicalExpenseOrConditions = [
       { tripId: { $in: historicalShipmentIds } }
     ];
     if (vehicle && vehicle !== "all") historicalExpenseOrConditions.push({ vehicleNo: vehicle });
     if (driver && driver !== "all") historicalExpenseOrConditions.push({ driverName: driver });
 
-    const historicalExpenses = await Expense.find({
-      $or: historicalExpenseOrConditions
-    }).lean();
+    const expenseQueryFilter = { $or: historicalExpenseOrConditions };
+    if (startDate && endDate) {
+      expenseQueryFilter.date = { $gte: startDate, $lte: endDate };
+    } else if (startDate) {
+      expenseQueryFilter.date = { $gte: startDate };
+    }
+
+    const historicalExpenses = await Expense.find(expenseQueryFilter).lean();
 
     const historicalExpenseMap = new Map();
     historicalExpenses.forEach((exp) => {

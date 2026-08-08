@@ -14,7 +14,7 @@ import fs from "fs";
  ───────────────────────────────────────────────── */
 export const getExpenses = async (req, res) => {
   try {
-    const { lrNumber, vehicleId, driverId, dateFrom, dateTo, tripId, category } = req.query;
+    const { lrNumber, vehicleId, driverId, dateFrom, dateTo, fromDate, toDate, tripId, category } = req.query;
     const query = {};
 
     if (category) query.category = category;
@@ -23,10 +23,20 @@ export const getExpenses = async (req, res) => {
     if (vehicleId) query.vehicleId = vehicleId;
     if (driverId) query.driverId = driverId;
 
-    if (dateFrom || dateTo) {
+    const start = fromDate || dateFrom;
+    const end = toDate || dateTo;
+    if (start || end) {
       query.date = {};
-      if (dateFrom) query.date.$gte = new Date(dateFrom);
-      if (dateTo) query.date.$lte = new Date(dateTo);
+      if (start) {
+        const s = new Date(start);
+        s.setHours(0, 0, 0, 0);
+        query.date.$gte = s;
+      }
+      if (end) {
+        const e = new Date(end);
+        e.setHours(23, 59, 59, 999);
+        query.date.$lte = e;
+      }
     }
 
     const expenses = await Expense.find(query)

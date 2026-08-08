@@ -182,10 +182,28 @@ export const createShipment = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const getShipments = async (req, res) => {
   try {
-    const { status, search, page = 1, limit = 20 } = req.query;
+    const { status, search, fromDate, toDate, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
     const query = {};
 
     if (status && status !== "all") query.status = status;
+
+    const start = fromDate || dateFrom;
+    const end = toDate || dateTo;
+    if (start || end) {
+      const dateCond = {};
+      if (start) {
+        const s = new Date(start);
+        s.setHours(0, 0, 0, 0);
+        dateCond.$gte = s;
+      }
+      if (end) {
+        const e = new Date(end);
+        e.setHours(23, 59, 59, 999);
+        dateCond.$lte = e;
+      }
+      query.createdAt = dateCond;
+    }
+
     if (search) {
       const r = { $regex: search, $options: "i" };
       query.$or = [

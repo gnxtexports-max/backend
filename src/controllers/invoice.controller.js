@@ -102,6 +102,10 @@ export const getInvoices = async (req, res) => {
     let {
       search = "",
       status = "",
+      fromDate = "",
+      toDate = "",
+      dateFrom = "",
+      dateTo = "",
       page = 1,
       limit = 15,
       all = "false",
@@ -141,6 +145,23 @@ export const getInvoices = async (req, res) => {
       query.status = status;
     }
 
+    // DATE RANGE FILTER
+    const start = fromDate || dateFrom;
+    const end = toDate || dateTo;
+    if (start || end) {
+      query.invoiceDate = {};
+      if (start) {
+        const s = new Date(start);
+        s.setHours(0, 0, 0, 0);
+        query.invoiceDate.$gte = s;
+      }
+      if (end) {
+        const e = new Date(end);
+        e.setHours(23, 59, 59, 999);
+        query.invoiceDate.$lte = e;
+      }
+    }
+
     // ACTIVE FILTER: keep Delivered invoices on main page (as requested by client)
     // Only exclude Cancelled invoices older than 1 minute unless all=true is passed
     if (all !== "true") {
@@ -157,10 +178,11 @@ export const getInvoices = async (req, res) => {
       ];
     }
 
-    // FETCH MATCHING RECORDS
+    // FETCH MATCHING RECORDS: Sort by invoiceDate descending, plantReferenceNumber descending
     const invoices = await Invoice.find(query).sort({
-      plantReferenceNumber: 1,
-      invoiceNumber: 1
+      invoiceDate: -1,
+      plantReferenceNumber: -1,
+      createdAt: -1
     });
 
     // GROUPING
@@ -202,6 +224,21 @@ export const getInvoices = async (req, res) => {
 
     const groupedData = Array.from(groupedMap.values());
 
+    // Sort grouped items and their sub-invoices by newest invoiceDate first, then plantNumber descending
+    groupedData.forEach((group) => {
+      group.invoices.sort((a, b) => {
+        const dDiff = new Date(b.invoiceDate || 0) - new Date(a.invoiceDate || 0);
+        if (dDiff !== 0) return dDiff;
+        return String(b.invoiceNumber || "").localeCompare(String(a.invoiceNumber || ""), undefined, { numeric: true, sensitivity: "base" });
+      });
+    });
+    groupedData.sort((a, b) => {
+      const maxA = Math.max(...a.invoices.map((i) => new Date(i.invoiceDate || 0).getTime() || 0));
+      const maxB = Math.max(...b.invoices.map((i) => new Date(i.invoiceDate || 0).getTime() || 0));
+      if (maxB !== maxA) return maxB - maxA;
+      return String(b.plantNumber || "").localeCompare(String(a.plantNumber || ""), undefined, { numeric: true, sensitivity: "base" });
+    });
+
     // PAGINATION
     const total = groupedData.length;
     const totalPages = Math.ceil(total / limit);
@@ -216,7 +253,6 @@ export const getInvoices = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: paginatedData,
       data: paginatedData,
       pagination: {
         total,
@@ -234,7 +270,7 @@ export const getInvoices = async (req, res) => {
       message: error.message,
     });
   }
-}
+};
 
 export const updateInvoiceStatus = async (req, res) => {
   try {
@@ -369,7 +405,7 @@ export const getInvoicesByPlant = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const getInvoiceHistory = async (req, res) => {
   try {
-    let { search = "", page = 1, limit = 15 } = req.query;
+    let { search = "", fromDate = "", toDate = "", dateFrom = "", dateTo = "", page = 1, limit = 15 } = req.query;
     page = Number(page);
     limit = Number(limit);
 
@@ -396,6 +432,23 @@ export const getInvoiceHistory = async (req, res) => {
       ]
     };
 
+    const start = fromDate || dateFrom;
+    const end = toDate || dateTo;
+    if (start || end) {
+      const dateCond = {};
+      if (start) {
+        const s = new Date(start);
+        s.setHours(0, 0, 0, 0);
+        dateCond.$gte = s;
+      }
+      if (end) {
+        const e = new Date(end);
+        e.setHours(23, 59, 59, 999);
+        dateCond.$lte = e;
+      }
+      query.invoiceDate = dateCond;
+    }
+
     if (search.trim()) {
       query.$and = [
         {
@@ -408,7 +461,7 @@ export const getInvoiceHistory = async (req, res) => {
       ];
     }
 
-    const invoices = await Invoice.find(query).sort({ updatedAt: -1 });
+    const invoices = await Invoice.find(query).sort({ invoiceDate: -1, updatedAt: -1 });
 
     // Group by plant + customer (same as main list)
     const groupedMap = new Map();
@@ -442,6 +495,17 @@ export const getInvoiceHistory = async (req, res) => {
     });
 
     const groupedData = Array.from(groupedMap.values());
+
+    groupedData.forEach((group) => {
+      group.invoices.sort((a, b) => new Date(b.invoiceDate || 0) - new Date(a.invoiceDate || 0));
+    });
+    groupedData.sort((a, b) => {
+      const maxA = Math.max(...a.invoices.map((i) => new Date(i.invoiceDate || 0).getTime() || 0));
+      const maxB = Math.max(...b.invoices.map((i) => new Date(i.invoiceDate || 0).getTime() || 0));
+      if (maxB !== maxA) return maxB - maxA;
+      return String(b.plantNumber || "").localeCompare(String(a.plantNumber || ""), undefined, { numeric: true, sensitivity: "base" });
+    });
+
     const total = groupedData.length;
     const totalPages = Math.ceil(total / limit);
     const paginated = groupedData.slice((page - 1) * limit, page * limit);

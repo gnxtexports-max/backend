@@ -5,38 +5,153 @@ import Invoice from "../models/invoice.model.js";
 export const getDashboardStats = async (req, res) => {
   try {
     const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const sevenDaysAgo = new Date(today);
-    sevenDaysAgo.setDate(today.getDate() - 7);
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 0, 0, 0, 0);
+    const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+    const todayFilter = { $gte: todayStart, $lte: todayEnd };
 
     const [
-      activeShipments,
-      pendingPODs,
-      pendingDispatch,
-      cancelledInvoices,
-      pendingDelivery,
-      deliveriesToday
+      activeShipmentsDocs,
+      pendingShipmentsDocs,
+      pendingInvoicesDocs,
+      cancelledInvoicesCount,
+      deliveredTodayDocs
     ] = await Promise.all([
-      Shipment.countDocuments({ status: "In Transit", createdAt: { $gte: sevenDaysAgo } }),
-      Invoice.countDocuments({ status: "Pending", createdAt: { $gte: sevenDaysAgo } }), // Assuming Pending means POD needed or similar. Adjust if needed.
-      Shipment.countDocuments({ status: "Pending", createdAt: { $gte: sevenDaysAgo } }),
+      Shipment.find({ status: "In Transit" }).lean(),
+      Shipment.find({ status: "Pending" }).lean(),
+      Invoice.find({ status: "Pending" }).select("weight invoiceNumber").lean(),
       Invoice.countDocuments({
         status: "Cancelled",
         $or: [
-          { cancelledAt: { $gte: sevenDaysAgo } },
-          { cancelledAt: null, createdAt: { $gte: sevenDaysAgo } }
+          { cancelledAt: todayFilter },
+          { createdAt: todayFilter }
         ]
       }),
-      Shipment.countDocuments({ status: "In Transit", createdAt: { $gte: sevenDaysAgo } }), // Pending Delivery is often same as In Transit or specific state
-      Shipment.countDocuments({ status: { $in: ["Delivered", "Closed"] }, deliveryDate: { $gte: today } })
+      Shipment.find({
+        status: { $in: ["Delivered", "Closed"] },
+        $or: [
+          { deliveryDate: todayFilter },
+          { dispatchDate: todayFilter },
+          { createdAt: todayFilter }
+        ]
+      }).lean()
     ]);
 
+    // 1. In Transit Shipments metrics
+    const inTransitShipmentsCount = activeShipmentsDocs.length;
+    let inTransitWeightKg = 0;
+    let inTransitInvoicesCount = 0;
+
+    activeShipmentsDocs.forEach((s) => {
+      inTransitWeightKg += s.totalWeightKg || 0;
+      if (s.destinations && Array.isArray(s.destinations)) {
+        s.destinations.forEach((d) => {
+          if (d.invoiceNumbers && Array.isArray(d.invoiceNumbers)) {
+            inTransitInvoicesCount += d.invoiceNumbers.length;
+          } else if (d.invoiceIds && Array.isArray(d.invoiceIds)) {
+            inTransitInvoicesCount += d.invoiceIds.length;
+          } else {
+            inTransitInvoicesCount += 1;
+          }
+        });
+      } else {
+        inTransitInvoicesCount += 1;
+      }
+    });
+
+    // 2. Pending Invoices for Dispatch metrics
+    let pendingInvoicesCount = 0;
+    let pendingWeightKg = 0;
+
+    if (pendingShipmentsDocs.length > 0) {
+      pendingShipmentsDocs.forEach((s) => {
+        pendingWeightKg += s.totalWeightKg || 0;
+        if (s.destinations && Array.isArray(s.destinations)) {
+          s.destinations.forEach((d) => {
+            if (d.invoiceNumbers && Array.isArray(d.invoiceNumbers)) {
+              pendingInvoicesCount += d.invoiceNumbers.length;
+            } else if (d.invoiceIds && Array.isArray(d.invoiceIds)) {
+              pendingInvoicesCount += d.invoiceIds.length;
+            } else {
+              pendingInvoicesCount += 1;
+            }
+          });
+        } else {
+          pendingInvoicesCount += 1;
+        }
+      });
+    } else {
+      pendingInvoicesCount = 0;
+      pendingWeightKg = 0;
+    }
+
+    // 3. Deliveries Today metrics
+    const deliveredShipmentsCount = deliveredTodayDocs.length;
+    let deliveredWeightKg = 0;
+    let deliveredInvoicesCount = 0;
+
+    deliveredTodayDocs.forEach((s) => {
+      deliveredWeightKg += s.totalWeightKg || 0;
+      if (s.destinations && Array.isArray(s.destinations)) {
+        s.destinations.forEach((d) => {
+          if (d.invoiceNumbers && Array.isArray(d.invoiceNumbers)) {
+            deliveredInvoicesCount += d.invoiceNumbers.length;
+          } else if (d.invoiceIds && Array.isArray(d.invoiceIds)) {
+            deliveredInvoicesCount += d.invoiceIds.length;
+          } else {
+            deliveredInvoicesCount += 1;
+          }
+        });
+      } else {
+        deliveredInvoicesCount += 1;
+      }
+    });
+
     const stats = [
-      { title: "Active Shipments", value: activeShipments.toString(), trendUp: true, iconName: "Truck", iconColor: "text-blue-600", bg: "bg-blue-50", border: "border-blue-100" },
-      { title: "Pending Dispatch", value: pendingDispatch.toString(), trendUp: true, iconName: "Clock", iconColor: "text-amber-600", bg: "bg-amber-50", border: "border-amber-100" },
-      { title: "Cancelled Invoices", value: cancelledInvoices.toString(), trendUp: false, iconName: "XCircle", iconColor: "text-red-600", bg: "bg-red-50", border: "border-red-100" },
-      { title: "Deliveries Today", value: deliveriesToday.toString(), trendUp: true, iconName: "CheckCircle2", iconColor: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-100" }
+      {
+        title: "In Transit Shipments",
+        value: inTransitShipmentsCount.toString(),
+        inTransitInvoices: inTransitInvoicesCount,
+        inTransitWeight: inTransitWeightKg,
+        inTransitWeightFormatted: `${inTransitWeightKg.toLocaleString("en-IN", { maximumFractionDigits: 2 })} kg`,
+        trendUp: true,
+        iconName: "Truck",
+        iconColor: "text-blue-600",
+        bg: "bg-blue-50",
+        border: "border-blue-100"
+      },
+      {
+        title: "Pending Invoices for Dispatch",
+        value: (pendingShipmentsDocs.length || pendingInvoicesCount).toString(),
+        pendingInvoices: pendingInvoicesCount,
+        pendingWeight: pendingWeightKg,
+        pendingWeightFormatted: `${pendingWeightKg.toLocaleString("en-IN", { maximumFractionDigits: 2 })} kg`,
+        trendUp: true,
+        iconName: "Clock",
+        iconColor: "text-amber-600",
+        bg: "bg-amber-50",
+        border: "border-amber-100"
+      },
+      {
+        title: "Cancelled Invoices",
+        value: cancelledInvoicesCount.toString(),
+        trendUp: false,
+        iconName: "XCircle",
+        iconColor: "text-red-600",
+        bg: "bg-red-50",
+        border: "border-red-100"
+      },
+      {
+        title: "Deliveries Today",
+        value: deliveredShipmentsCount.toString(),
+        deliveredInvoices: deliveredInvoicesCount,
+        deliveredWeight: deliveredWeightKg,
+        deliveredWeightFormatted: `${deliveredWeightKg.toLocaleString("en-IN", { maximumFractionDigits: 2 })} kg`,
+        trendUp: true,
+        iconName: "CheckCircle2",
+        iconColor: "text-emerald-600",
+        bg: "bg-emerald-50",
+        border: "border-emerald-100"
+      }
     ];
 
     res.status(200).json({ success: true, data: stats });
@@ -47,32 +162,205 @@ export const getDashboardStats = async (req, res) => {
 
 export const getDashboardWeeklyData = async (req, res) => {
   try {
-    // Return dummy weekly data or calculate real one. For now calculate dummy to real mapping
-    // We can aggregate shipments by day for the last 7 days.
-    const last7Days = Array.from({ length: 7 }).map((_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - (6 - i));
-      return d;
-    });
+    const { fromDate, toDate, dateFrom, dateTo } = req.query;
+    const startParam = fromDate || dateFrom;
+    const endParam = toDate || dateTo;
 
-    const data = await Promise.all(last7Days.map(async (date) => {
+    let days = [];
+    if (startParam && endParam) {
+      let cur = new Date(startParam);
+      cur.setHours(0, 0, 0, 0);
+      const end = new Date(endParam);
+      end.setHours(23, 59, 59, 999);
+      while (cur <= end && days.length < 31) {
+        days.push(new Date(cur));
+        cur.setDate(cur.getDate() + 1);
+      }
+    } else {
+      days = Array.from({ length: 7 }).map((_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (6 - i));
+        return d;
+      });
+    }
+
+    const data = await Promise.all(days.map(async (date) => {
       const start = new Date(date);
       start.setHours(0, 0, 0, 0);
       const end = new Date(date);
       end.setHours(23, 59, 59, 999);
 
-      const dispatches = await Shipment.countDocuments({ dispatchDate: { $gte: start, $lte: end } });
-      const deliveries = await Shipment.countDocuments({ deliveryDate: { $gte: start, $lte: end } });
+      const dateQuery = { $gte: start, $lte: end };
+
+      const [dispatchedShipmentsDocs, pendingShipmentsDocs] = await Promise.all([
+        Shipment.find({
+          status: { $in: ["In Transit", "Delivered", "Closed"] },
+          $or: [{ dispatchDate: dateQuery }, { createdAt: dateQuery }]
+        }).lean(),
+        Shipment.find({
+          status: "Pending",
+          createdAt: dateQuery
+        }).lean()
+      ]);
+
+      let dispatchedInvoices = 0;
+      let dispatchedWeightKg = 0;
+
+      dispatchedShipmentsDocs.forEach((s) => {
+        dispatchedWeightKg += s.totalWeightKg || 0;
+        if (s.destinations && Array.isArray(s.destinations)) {
+          s.destinations.forEach((d) => {
+            if (d.invoiceNumbers && Array.isArray(d.invoiceNumbers)) {
+              dispatchedInvoices += d.invoiceNumbers.length;
+            } else if (d.invoiceIds && Array.isArray(d.invoiceIds)) {
+              dispatchedInvoices += d.invoiceIds.length;
+            } else {
+              dispatchedInvoices += 1;
+            }
+          });
+        } else {
+          dispatchedInvoices += 1;
+        }
+      });
+
+      let pendingDispatches = 0;
+      pendingShipmentsDocs.forEach((s) => {
+        if (s.destinations && Array.isArray(s.destinations)) {
+          s.destinations.forEach((d) => {
+            if (d.invoiceNumbers && Array.isArray(d.invoiceNumbers)) {
+              pendingDispatches += d.invoiceNumbers.length;
+            } else if (d.invoiceIds && Array.isArray(d.invoiceIds)) {
+              pendingDispatches += d.invoiceIds.length;
+            } else {
+              pendingDispatches += 1;
+            }
+          });
+        } else {
+          pendingDispatches += 1;
+        }
+      });
+
+      const totalInvoices = dispatchedInvoices + pendingDispatches;
 
       return {
-        name: start.toLocaleDateString('en-US', { weekday: 'short' }),
-        dispatches,
-        deliveries
+        name: start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        dispatchedInvoices,
+        pendingDispatches,
+        totalInvoices,
+        dispatchedWeightKg: Math.round(dispatchedWeightKg * 100) / 100,
+        dispatches: dispatchedInvoices,
+        deliveries: await Shipment.countDocuments({
+          status: { $in: ["Delivered", "Closed"] },
+          $or: [{ deliveryDate: dateQuery }, { dispatchDate: dateQuery }, { createdAt: dateQuery }]
+        })
       };
     }));
 
     res.status(200).json({ success: true, data });
   } catch (err) {
     res.status(500).json({ success: false, message: "Error fetching weekly data", error: err.message });
+  }
+};
+
+export const getDashboardSummary = async (req, res) => {
+  try {
+    const { fromDate, toDate, dateFrom, dateTo } = req.query;
+
+    const startParam = fromDate || dateFrom;
+    const endParam = toDate || dateTo;
+
+    let startDate, endDate;
+
+    if (startParam) {
+      startDate = new Date(startParam);
+      startDate.setHours(0, 0, 0, 0);
+    } else {
+      // Default to 1st day of current month
+      const now = new Date();
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    }
+
+    if (endParam) {
+      endDate = new Date(endParam);
+      endDate.setHours(23, 59, 59, 999);
+    } else {
+      const now = new Date();
+      endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    }
+
+    const dateQuery = { $gte: startDate, $lte: endDate };
+
+    const [dispatchedShipmentsDocs, pendingShipmentsDocs] = await Promise.all([
+      Shipment.find({
+        status: { $in: ["In Transit", "Delivered", "Closed"] },
+        $or: [{ dispatchDate: dateQuery }, { createdAt: dateQuery }]
+      }).lean(),
+      Shipment.find({
+        status: "Pending",
+        createdAt: dateQuery
+      }).lean()
+    ]);
+
+    let dispatchedInvoices = 0;
+    let dispatchedWeightKg = 0;
+
+    dispatchedShipmentsDocs.forEach((s) => {
+      dispatchedWeightKg += s.totalWeightKg || 0;
+      if (s.destinations && Array.isArray(s.destinations)) {
+        s.destinations.forEach((d) => {
+          if (d.invoiceNumbers && Array.isArray(d.invoiceNumbers)) {
+            dispatchedInvoices += d.invoiceNumbers.length;
+          } else if (d.invoiceIds && Array.isArray(d.invoiceIds)) {
+            dispatchedInvoices += d.invoiceIds.length;
+          } else {
+            dispatchedInvoices += 1;
+          }
+        });
+      } else {
+        dispatchedInvoices += 1;
+      }
+    });
+
+    let pendingDispatches = 0;
+    pendingShipmentsDocs.forEach((s) => {
+      if (s.destinations && Array.isArray(s.destinations)) {
+        s.destinations.forEach((d) => {
+          if (d.invoiceNumbers && Array.isArray(d.invoiceNumbers)) {
+            pendingDispatches += d.invoiceNumbers.length;
+          } else if (d.invoiceIds && Array.isArray(d.invoiceIds)) {
+            pendingDispatches += d.invoiceIds.length;
+          } else {
+            pendingDispatches += 1;
+          }
+        });
+      } else {
+        pendingDispatches += 1;
+      }
+    });
+
+    const totalInvoices = dispatchedInvoices + pendingDispatches;
+
+    let totalDispatchedWeightFormatted = "";
+    if (dispatchedWeightKg >= 1000) {
+      totalDispatchedWeightFormatted = `${(dispatchedWeightKg / 1000).toFixed(2)} Ton`;
+    } else {
+      totalDispatchedWeightFormatted = `${(Math.round(dispatchedWeightKg * 100) / 100).toLocaleString("en-IN")} kg`;
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalInvoices,
+        dispatchedInvoices,
+        pendingDispatches,
+        totalDispatchedWeightKg: Math.round(dispatchedWeightKg * 100) / 100,
+        totalDispatchedWeightFormatted,
+        fromDate: startDate.toISOString().split("T")[0],
+        toDate: endDate.toISOString().split("T")[0]
+      }
+    });
+  } catch (err) {
+    console.error("Get dashboard summary error:", err);
+    res.status(500).json({ success: false, message: "Error fetching summary data", error: err.message });
   }
 };
