@@ -297,7 +297,7 @@ export const getDashboardSummary = async (req, res) => {
       }).lean(),
       Shipment.find({
         status: "Pending",
-        createdAt: dateQuery
+        $or: [{ createdAt: dateQuery }, { dispatchDate: dateQuery }]
       }).lean()
     ]);
 
