@@ -33,6 +33,20 @@ const __dirname = path.dirname(__filename);
 dotenv.config();
 dotenv.config({ path: path.join(__dirname, "..", ".env.production"), override: false });
 
+// ── Timestamp Logger Formatter ────────────────────
+const originalLog = console.log;
+const originalError = console.error;
+
+console.log = (...args) => {
+  const timestamp = new Date().toISOString();
+  originalLog(`[${timestamp}]`, ...args);
+};
+
+console.error = (...args) => {
+  const timestamp = new Date().toISOString();
+  originalError(`[${timestamp}]`, ...args);
+};
+
 const app = express();
 app.set("trust proxy", 1);
 const httpServer = createServer(app);   // wrap express in http.Server
