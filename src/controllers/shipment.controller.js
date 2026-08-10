@@ -201,7 +201,11 @@ export const getShipments = async (req, res) => {
         e.setHours(23, 59, 59, 999);
         dateCond.$lte = e;
       }
-      query.createdAt = dateCond;
+      query.$or = [
+        { deliveryDate: dateCond },
+        { dispatchDate: dateCond },
+        { createdAt: dateCond }
+      ];
     }
 
     if (search) {

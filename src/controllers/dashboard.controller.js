@@ -30,8 +30,9 @@ export const getDashboardStats = async (req, res) => {
         status: { $in: ["Delivered", "Closed"] },
         $or: [
           { deliveryDate: todayFilter },
-          { dispatchDate: todayFilter },
-          { createdAt: todayFilter }
+          { deliveryDate: { $exists: false }, dispatchDate: todayFilter },
+          { deliveryDate: null, dispatchDate: todayFilter },
+          { deliveryDate: { $exists: false }, dispatchDate: { $exists: false }, createdAt: todayFilter }
         ]
       }).lean()
     ]);
@@ -88,21 +89,27 @@ export const getDashboardStats = async (req, res) => {
     const deliveredShipmentsCount = deliveredTodayDocs.length;
     let deliveredWeightKg = 0;
     let deliveredInvoicesCount = 0;
+    let pendingPodsTodayCount = 0;
 
     deliveredTodayDocs.forEach((s) => {
       deliveredWeightKg += s.totalWeightKg || 0;
       if (s.destinations && Array.isArray(s.destinations)) {
         s.destinations.forEach((d) => {
-          if (d.invoiceNumbers && Array.isArray(d.invoiceNumbers)) {
-            deliveredInvoicesCount += d.invoiceNumbers.length;
-          } else if (d.invoiceIds && Array.isArray(d.invoiceIds)) {
-            deliveredInvoicesCount += d.invoiceIds.length;
-          } else {
-            deliveredInvoicesCount += 1;
+          const numInvs = (d.invoiceNumbers && Array.isArray(d.invoiceNumbers))
+            ? d.invoiceNumbers.length
+            : (d.invoiceIds && Array.isArray(d.invoiceIds))
+            ? d.invoiceIds.length
+            : 1;
+          deliveredInvoicesCount += numInvs;
+          if (!d.podImages || d.podImages.length === 0) {
+            pendingPodsTodayCount += numInvs;
           }
         });
       } else {
         deliveredInvoicesCount += 1;
+        if (!s.podImages || s.podImages.length === 0) {
+          pendingPodsTodayCount += 1;
+        }
       }
     });
 
@@ -146,6 +153,7 @@ export const getDashboardStats = async (req, res) => {
         deliveredInvoices: deliveredInvoicesCount,
         deliveredWeight: deliveredWeightKg,
         deliveredWeightFormatted: `${deliveredWeightKg.toLocaleString("en-IN", { maximumFractionDigits: 2 })} kg`,
+        pendingPODs: pendingPodsTodayCount,
         trendUp: true,
         iconName: "CheckCircle2",
         iconColor: "text-emerald-600",
@@ -195,11 +203,19 @@ export const getDashboardWeeklyData = async (req, res) => {
       const [dispatchedShipmentsDocs, pendingShipmentsDocs] = await Promise.all([
         Shipment.find({
           status: { $in: ["In Transit", "Delivered", "Closed"] },
-          $or: [{ dispatchDate: dateQuery }, { createdAt: dateQuery }]
+          $or: [
+            { dispatchDate: dateQuery },
+            { dispatchDate: { $exists: false }, createdAt: dateQuery },
+            { dispatchDate: null, createdAt: dateQuery }
+          ]
         }).lean(),
         Shipment.find({
           status: "Pending",
-          createdAt: dateQuery
+          $or: [
+            { dispatchDate: dateQuery },
+            { dispatchDate: { $exists: false }, createdAt: dateQuery },
+            { dispatchDate: null, createdAt: dateQuery }
+          ]
         }).lean()
       ]);
 
@@ -293,31 +309,45 @@ export const getDashboardSummary = async (req, res) => {
     const [dispatchedShipmentsDocs, pendingShipmentsDocs] = await Promise.all([
       Shipment.find({
         status: { $in: ["In Transit", "Delivered", "Closed"] },
-        $or: [{ dispatchDate: dateQuery }, { createdAt: dateQuery }]
+        $or: [
+          { dispatchDate: dateQuery },
+          { dispatchDate: { $exists: false }, createdAt: dateQuery },
+          { dispatchDate: null, createdAt: dateQuery }
+        ]
       }).lean(),
       Shipment.find({
         status: "Pending",
-        $or: [{ createdAt: dateQuery }, { dispatchDate: dateQuery }]
+        $or: [
+          { dispatchDate: dateQuery },
+          { dispatchDate: { $exists: false }, createdAt: dateQuery },
+          { dispatchDate: null, createdAt: dateQuery }
+        ]
       }).lean()
     ]);
 
     let dispatchedInvoices = 0;
     let dispatchedWeightKg = 0;
+    let pendingPODsCount = 0;
 
     dispatchedShipmentsDocs.forEach((s) => {
       dispatchedWeightKg += s.totalWeightKg || 0;
       if (s.destinations && Array.isArray(s.destinations)) {
         s.destinations.forEach((d) => {
-          if (d.invoiceNumbers && Array.isArray(d.invoiceNumbers)) {
-            dispatchedInvoices += d.invoiceNumbers.length;
-          } else if (d.invoiceIds && Array.isArray(d.invoiceIds)) {
-            dispatchedInvoices += d.invoiceIds.length;
-          } else {
-            dispatchedInvoices += 1;
+          const numInvs = (d.invoiceNumbers && Array.isArray(d.invoiceNumbers))
+            ? d.invoiceNumbers.length
+            : (d.invoiceIds && Array.isArray(d.invoiceIds))
+            ? d.invoiceIds.length
+            : 1;
+          dispatchedInvoices += numInvs;
+          if (!d.podImages || d.podImages.length === 0) {
+            pendingPODsCount += numInvs;
           }
         });
       } else {
         dispatchedInvoices += 1;
+        if (!s.podImages || s.podImages.length === 0) {
+          pendingPODsCount += 1;
+        }
       }
     });
 
@@ -353,6 +383,7 @@ export const getDashboardSummary = async (req, res) => {
         totalInvoices,
         dispatchedInvoices,
         pendingDispatches,
+        pendingPODs: pendingPODsCount,
         totalDispatchedWeightKg: Math.round(dispatchedWeightKg * 100) / 100,
         totalDispatchedWeightFormatted,
         fromDate: startDate.toISOString().split("T")[0],
