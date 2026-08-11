@@ -182,10 +182,18 @@ export const createShipment = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const getShipments = async (req, res) => {
   try {
-    const { status, search, fromDate, toDate, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
+    const { status, history, search, fromDate, toDate, dateFrom, dateTo, page = 1, limit = 20 } = req.query;
     const query = {};
 
-    if (status && status !== "all") query.status = status;
+    if (history === "true" || history === true) {
+      query.status = { $in: ["Closed", "Cancelled", "Delivered"] };
+    } else if (status && status !== "all") {
+      if (typeof status === "string" && status.includes(",")) {
+        query.status = { $in: status.split(",").map((s) => s.trim()).filter(Boolean) };
+      } else {
+        query.status = status;
+      }
+    }
 
     const start = fromDate || dateFrom;
     const end = toDate || dateTo;
@@ -216,17 +224,25 @@ export const getShipments = async (req, res) => {
         { driverName: r },
         { "destinations.plantReferenceNumber": r },
         { "destinations.lrNumber": r },
+        { "destinations.customerName": r },
       ];
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const isUnlimited = limit === "all" || Number(limit) === 0 || limit === "0";
+    const parsedLimit = isUnlimited ? 0 : Math.max(1, Number(limit) || 20);
+    const parsedPage = isUnlimited ? 1 : Math.max(1, Number(page) || 1);
+    const skip = isUnlimited ? 0 : (parsedPage - 1) * parsedLimit;
+
+    let shipmentQuery = Shipment.find(query).sort({ createdAt: -1 });
+    if (!isUnlimited) {
+      shipmentQuery = shipmentQuery.skip(skip).limit(parsedLimit);
+    }
+    shipmentQuery = shipmentQuery
+      .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
+      .lean();
+
     const [shipments, total] = await Promise.all([
-      Shipment.find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(Number(limit))
-        .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
-        .lean(),
+      shipmentQuery,
       Shipment.countDocuments(query),
     ]);
 
@@ -270,10 +286,13 @@ export const getShipments = async (req, res) => {
       return { ...s, destinations };
     });
 
+    const effectiveLimit = isUnlimited ? total : parsedLimit;
+    const totalPages = effectiveLimit > 0 ? Math.ceil(total / effectiveLimit) : 1;
+
     res.status(200).json({
       success: true,
       data: formatted,
-      pagination: { total, page: Number(page), limit: Number(limit), totalPages: Math.ceil(total / Number(limit)) },
+      pagination: { total, page: parsedPage, limit: effectiveLimit, totalPages },
     });
   } catch (err) {
     console.error("Get shipments error:", err);
