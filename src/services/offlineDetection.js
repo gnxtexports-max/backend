@@ -26,19 +26,24 @@ export const startOfflineDetection = (io) => {
 
       if (!offlineVehicles || offlineVehicles.length === 0) return;
 
-      for (const loc of offlineVehicles) {
-        // 1. Update VehicleLocation status
-        await VehicleLocation.findByIdAndUpdate(loc._id, {
-          vehicleStatus: "Offline",
-          speed: 0 // Assume speed is 0 if offline
-        });
+      const locIds = offlineVehicles.map(l => l._id);
+      const vehicleIds = offlineVehicles.map(l => l.vehicleId).filter(Boolean);
 
-        // 2. Update Vehicle status
-        if (loc.vehicleId) {
-          await Vehicle.findByIdAndUpdate(loc.vehicleId, {
-            status: "Offline"
-          });
-        }
+      // 1. Batch update VehicleLocation statuses
+      await VehicleLocation.updateMany(
+        { _id: { $in: locIds } },
+        { $set: { vehicleStatus: "Offline", speed: 0 } }
+      );
+
+      // 2. Batch update Vehicle statuses
+      if (vehicleIds.length > 0) {
+        await Vehicle.updateMany(
+          { _id: { $in: vehicleIds } },
+          { $set: { status: "Offline" } }
+        );
+      }
+
+      for (const loc of offlineVehicles) {
 
         // 3. Create a TripEvent if there is an active shipment
         if (loc.activeShipmentId) {

@@ -6,7 +6,10 @@ import { syncVehicleStatuses } from "../utils/syncStatuses.js";
 export const getAllVehicles = async (req, res) => {
   try {
     await syncVehicleStatuses();
-    const vehicles = await Vehicle.find().sort({ createdAt: -1 });
+    const vehicles = await Vehicle.find()
+      .select("vehicleId vehicleNo type model capacityKg status availability ownership gpsImei insuranceExpiry")
+      .sort({ createdAt: -1 })
+      .lean();
     res.status(200).json(vehicles);
   } catch (error) {
     res.status(500).json({ message: "Error fetching vehicles", error: error.message });
@@ -36,8 +39,12 @@ export const createVehicle = async (req, res) => {
       return res.status(400).json({ message: "Vehicle Number and Ownership are required" });
     }
 
-    // Check if vehicle number already exists
-    const existingVehicle = await Vehicle.findOne({ vehicleNo });
+    const cleanVehicleNo = String(vehicleNo).trim().toUpperCase();
+
+    // Check if vehicle number already exists (case-insensitive)
+    const existingVehicle = await Vehicle.findOne({
+      vehicleNo: { $regex: new RegExp(`^${cleanVehicleNo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+    });
     if (existingVehicle) {
       return res.status(409).json({ message: "Vehicle number already exists" });
     }
@@ -94,15 +101,19 @@ export const updateVehicle = async (req, res) => {
     }
 
     // Check if new vehicle number already exists (if being changed)
-    if (vehicleNo && vehicleNo !== vehicle.vehicleNo) {
-      const existingVehicle = await Vehicle.findOne({ vehicleNo });
+    const cleanVehicleNo = vehicleNo ? String(vehicleNo).trim().toUpperCase() : undefined;
+    if (cleanVehicleNo && cleanVehicleNo !== vehicle.vehicleNo) {
+      const existingVehicle = await Vehicle.findOne({
+        _id: { $ne: req.params.id },
+        vehicleNo: { $regex: new RegExp(`^${cleanVehicleNo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+      });
       if (existingVehicle) {
         return res.status(409).json({ message: "Vehicle number already exists" });
       }
     }
 
     // Update fields
-    if (vehicleNo) vehicle.vehicleNo = vehicleNo;
+    if (cleanVehicleNo) vehicle.vehicleNo = cleanVehicleNo;
     if (type !== undefined) vehicle.type = type || "";
     if (model !== undefined) vehicle.model = model || "";
     if (capacityKg !== undefined) {
@@ -245,14 +256,12 @@ export const deleteVehicle = async (req, res) => {
 // Get fleet statistics
 export const getFleetStats = async (req, res) => {
   try {
-    const totalVehicles = await Vehicle.countDocuments();
-    const activeVehicles = await Vehicle.countDocuments({
-      status: { $in: ["Active", "In Transit"] }
-    });
-    const idleVehicles = await Vehicle.countDocuments({ status: "Idle" });
-    const maintenanceVehicles = await Vehicle.countDocuments({
-      status: { $in: ["Maintenance", "Breakdown"] }
-    });
+    const [totalVehicles, activeVehicles, idleVehicles, maintenanceVehicles] = await Promise.all([
+      Vehicle.countDocuments(),
+      Vehicle.countDocuments({ status: { $in: ["Active", "In Transit"] } }),
+      Vehicle.countDocuments({ status: "Idle" }),
+      Vehicle.countDocuments({ status: { $in: ["Maintenance", "Breakdown"] } }),
+    ]);
 
     res.status(200).json({
       total: totalVehicles,
@@ -280,7 +289,7 @@ export const searchVehicles = async (req, res) => {
         { model: { $regex: q, $options: "i" } },
         { type: { $regex: q, $options: "i" } },
       ],
-    });
+    }).lean();
 
     res.status(200).json(vehicles);
   } catch (error) {
@@ -299,7 +308,7 @@ export const filterVehicles = async (req, res) => {
     if (status && status !== "all") filter.status = status;
     if (availability && availability !== "all") filter.availability = availability;
 
-    const vehicles = await Vehicle.find(filter).sort({ createdAt: -1 });
+    const vehicles = await Vehicle.find(filter).sort({ createdAt: -1 }).lean();
     res.status(200).json(vehicles);
   } catch (error) {
     res.status(500).json({ message: "Error filtering vehicles", error: error.message });

@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import mongoose from "mongoose";
 import session from "express-session";
 import MongoStore from "connect-mongo";
+import compression from "compression";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import connectDB from "./config/db.js";
@@ -13,6 +14,7 @@ import expenseRoutes from "./routes/expense.routes.js";
 import gpsRoutes from "./routes/gps.routes.js";
 import vehicleRoutes from "./routes/vehicleRoutes.js";
 import driverRoutes from "./routes/driverRoutes.js";
+import supervisorRoutes from "./routes/supervisorRoutes.js";
 import reportRoutes from "./routes/report.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import authRoutes from "./routes/auth.routes.js";
@@ -108,6 +110,7 @@ io.on("connection", (socket) => {
 });
 
 /* ── Middleware ────────────────────────────────── */
+app.use(compression());
 app.use(cors({
   origin: corsOrigin,
   credentials: true,
@@ -144,7 +147,28 @@ app.use(session({
 
 connectDB();
 
+import rateLimit from "express-rate-limit";
+import { authenticate } from "./middleware/auth.middleware.js";
+
+/* ── Rate limiters ─────────────────────────────── */
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // 30 requests per IP per 15 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Too many login attempts from this IP. Please try again after 15 minutes." },
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 60, // 60 uploads per IP per 15 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Upload rate limit reached. Please try again later." },
+});
+
 /* ── Routes ────────────────────────────────────── */
+app.use("/api/auth/login", authLimiter);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/invoices", invoiceRoutes);
@@ -153,12 +177,13 @@ app.use("/api/expenses", expenseRoutes);
 app.use("/api/gps", gpsRoutes);
 app.use("/api/vehicles", vehicleRoutes);
 app.use("/api/drivers", driverRoutes);
+app.use("/api/supervisors", supervisorRoutes);
 app.use("/api/reports", reportRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/support", supportRoutes);
 
 /* ── File Upload ──────────────────────────────── */
-app.post("/api/upload", upload.single("file"), async (req, res) => {
+app.post("/api/upload", authenticate, uploadLimiter, upload.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "No file uploaded" });
   }
@@ -185,10 +210,13 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 
 /* ── Health check ──────────────────────────────── */
 app.get(["/health", "/api/health"], (req, res) => {
-  console.log(`[Health API] Health check requested from ${req.ip} at ${new Date().toLocaleTimeString()}`);
-  res.status(200).json({
-    message: "Server is running",
-    socketClients: io.engine.clientsCount,
+  const isDbConnected = mongoose.connection.readyState === 1;
+  const statusCode = isDbConnected ? 200 : 503;
+  res.status(statusCode).json({
+    status: isDbConnected ? "ok" : "degraded",
+    database: isDbConnected ? "connected" : "disconnected",
+    uptime: Math.floor(process.uptime()),
+    socketClients: io.engine?.clientsCount || 0,
   });
 });
 

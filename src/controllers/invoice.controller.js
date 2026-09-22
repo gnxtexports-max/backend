@@ -38,43 +38,72 @@ export const uploadInvoiceSheet = async (req, res) => {
 
     const resolvedKeys = resolveHeaderKeys(sheetHeaders);
     const uniqueMap = new Map();
+    const invoiceSetInSheet = new Set();
 
     for (const row of rows) {
       const mapped = mapExcelRowToInvoice(row, resolvedKeys);
 
-      if (!mapped.plantReferenceNumber) continue;
+      if (!mapped.plantReferenceNumber || !mapped.invoiceNumber) continue;
 
-      const key = `${mapped.plantReferenceNumber}_${mapped.customerName}_${mapped.invoiceNumber}_${mapped.invoiceDate}`;
+      const plantKey = String(mapped.plantReferenceNumber).trim();
+      const invoiceKey = String(mapped.invoiceNumber).trim();
 
-      if (!uniqueMap.has(key)) {
-        uniqueMap.set(key, mapped);
+      // Only allow 1 row per plant number and per invoice number within the uploaded sheet
+      if (!uniqueMap.has(plantKey) && !invoiceSetInSheet.has(invoiceKey)) {
+        uniqueMap.set(plantKey, mapped);
+        invoiceSetInSheet.add(invoiceKey);
       }
     }
 
     const cleanData = Array.from(uniqueMap.values());
 
+    if (cleanData.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No valid rows with Plant Number and Invoice Number found in the sheet",
+      });
+    }
+
+    // Check existing plant numbers and invoice numbers in DB to prevent duplicates
+    const plantNumbersInSheet = cleanData.map((d) => d.plantReferenceNumber);
+    const invoiceNumbersInSheet = cleanData.map((d) => d.invoiceNumber);
+
+    const existingInvoices = await Invoice.find({
+      $or: [
+        { plantReferenceNumber: { $in: plantNumbersInSheet } },
+        { invoiceNumber: { $in: invoiceNumbersInSheet } },
+      ],
+    }).select("plantReferenceNumber invoiceNumber");
+
+    const existingPlantSet = new Set(existingInvoices.map((i) => String(i.plantReferenceNumber).trim()));
+    const existingInvoiceSet = new Set(existingInvoices.map((i) => String(i.invoiceNumber).trim()));
+
+    // Filter out rows whose plant number or invoice number already exists in DB
+    const nonDuplicateData = cleanData.filter(
+      (d) =>
+        !existingPlantSet.has(String(d.plantReferenceNumber).trim()) &&
+        !existingInvoiceSet.has(String(d.invoiceNumber).trim())
+    );
+
     let insertedCount = 0;
 
-    try {
+    if (nonDuplicateData.length > 0) {
+      try {
+        const inserted = await Invoice.insertMany(nonDuplicateData, {
+          ordered: false,
+        });
 
-      const inserted = await Invoice.insertMany(cleanData, {
-        ordered: false,
-      });
-
-      insertedCount = inserted.length;
-
-    } catch (error) {
-
-      // Ignore duplicate errors
-      if (error.writeErrors) {
-
-        insertedCount =
-          error.result?.result?.nInserted || 0;
-
-      } else {
-        throw error;
+        insertedCount = inserted.length;
+      } catch (error) {
+        if (error.writeErrors || error.code === 11000) {
+          insertedCount = error.result?.result?.nInserted || error.insertedDocs?.length || 0;
+        } else {
+          throw error;
+        }
       }
     }
+
+    const duplicateCount = cleanData.length - nonDuplicateData.length;
 
     if (req.io) req.io.emit("invoices:changed");
 
@@ -82,14 +111,13 @@ export const uploadInvoiceSheet = async (req, res) => {
       success: true,
       data: {
         invoicesAdded: insertedCount,
-        skippedRows: cleanData.length - insertedCount,
-        uniquePlants: new Set(
-          cleanData.map(i => i.plantReferenceNumber)
-        ).size,
+        skippedDuplicates: duplicateCount,
+        uniquePlants: insertedCount,
       },
+      message: duplicateCount > 0
+        ? `${insertedCount} invoices added (${duplicateCount} rows skipped due to duplicate Plant No / Invoice No)`
+        : `${insertedCount} invoices uploaded successfully`,
     });
-
-
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -162,28 +190,12 @@ export const getInvoices = async (req, res) => {
       }
     }
 
-    // ACTIVE FILTER: keep Delivered invoices on main page (as requested by client)
-    // Only exclude Cancelled invoices older than 1 minute unless all=true is passed
-    if (all !== "true") {
-      const oneMinuteAgo = new Date(Date.now() - 1 * 60 * 1000);
-      query.$nor = [
-        {
-          status: "Cancelled",
-          $or: [
-            { cancelledAt: { $lt: oneMinuteAgo } },
-            { cancelledAt: null, updatedAt: { $lt: oneMinuteAgo } },
-            { cancelledAt: { $exists: false }, updatedAt: { $lt: oneMinuteAgo } }
-          ]
-        }
-      ];
-    }
-
     // FETCH MATCHING RECORDS: Sort by invoiceDate descending, plantReferenceNumber descending
     const invoices = await Invoice.find(query).sort({
       invoiceDate: -1,
       plantReferenceNumber: -1,
       createdAt: -1
-    });
+    }).lean();
 
     // GROUPING
     const groupedMap = new Map();
@@ -198,7 +210,11 @@ export const getInvoices = async (req, res) => {
           customerName: inv.customerName,
           location: inv.location || "",
           status: inv.status,
+          podStatus: "Not Generated",
           createdAt: inv.createdAt,
+          updatedAt: inv.updatedAt,
+          assignedAt: inv.assignedAt,
+          inTransitAt: inv.inTransitAt,
           deliveredAt: inv.deliveredAt,
           cancelledAt: inv.cancelledAt,
           invoices: [],
@@ -211,6 +227,7 @@ export const getInvoices = async (req, res) => {
         invoiceDate: inv.invoiceDate,
         isChecked: inv.isChecked,
         status: inv.status,
+        podStatus: "Not Generated",
         quantity: inv.quantity || 0,
         weight: inv.weight || 0,
         tyre: inv.tyre || 0,
@@ -219,6 +236,12 @@ export const getInvoices = async (req, res) => {
         cancellationReason: inv.cancellationReason || "",
         beforeDispatchRemarks: inv.beforeDispatchRemarks || "",
         afterDispatchRemarks: inv.afterDispatchRemarks || "",
+        assignedAt: inv.assignedAt,
+        inTransitAt: inv.inTransitAt,
+        deliveredAt: inv.deliveredAt,
+        cancelledAt: inv.cancelledAt,
+        createdAt: inv.createdAt,
+        updatedAt: inv.updatedAt,
       });
     });
 
@@ -241,15 +264,66 @@ export const getInvoices = async (req, res) => {
 
     // PAGINATION
     const total = groupedData.length;
-    const totalPages = Math.ceil(total / limit);
+    const totalPages = all === "true" ? 1 : Math.ceil(total / limit);
 
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + limit;
+    const startIndex = all === "true" ? 0 : (page - 1) * limit;
+    const endIndex = all === "true" ? total : startIndex + limit;
 
     const paginatedData = groupedData.slice(
       startIndex,
       endIndex
     );
+
+    // Compute POD status ONLY for the paginated slice
+    if (paginatedData.length > 0) {
+      const targetInvoiceIds = [];
+      const targetPlantNumbers = [];
+      paginatedData.forEach((group) => {
+        if (group.plantNumber) targetPlantNumbers.push(group.plantNumber);
+        group.invoices.forEach((inv) => {
+          if (inv._id) targetInvoiceIds.push(inv._id);
+        });
+      });
+
+      const shipments = await Shipment.find({
+        $or: [
+          { "destinations.invoiceIds": { $in: targetInvoiceIds } },
+          { "destinations.plantReferenceNumber": { $in: targetPlantNumbers } }
+        ]
+      }).select("status destinations podImages").lean();
+
+      const calculatePodStatus = (inv, plantRef) => {
+        if (inv.status === "Cancelled") return "Not Generated";
+
+        const matchingShipment = shipments.find((s) => {
+          if (!s.destinations || !Array.isArray(s.destinations)) return false;
+          return s.destinations.some((d) => {
+            const idMatch = d.invoiceIds && d.invoiceIds.some((id) => id.toString() === inv._id.toString());
+            const plantMatch = d.plantReferenceNumber === (plantRef || inv.plantReferenceNumber);
+            return idMatch || plantMatch;
+          });
+        });
+
+        if (!matchingShipment) return "Not Generated";
+        if (matchingShipment.status === "Pending") return "Not Generated";
+
+        const dest = matchingShipment.destinations?.find((d) => {
+          const idMatch = d.invoiceIds && d.invoiceIds.some((id) => id.toString() === inv._id.toString());
+          const plantMatch = d.plantReferenceNumber === (plantRef || inv.plantReferenceNumber);
+          return idMatch || plantMatch;
+        });
+
+        const hasPOD = (dest?.podImages && dest.podImages.length > 0) || (matchingShipment.podImages && matchingShipment.podImages.length > 0);
+        return hasPOD ? "Received" : "Pending";
+      };
+
+      paginatedData.forEach((group) => {
+        group.invoices.forEach((inv) => {
+          inv.podStatus = calculatePodStatus(inv, group.plantNumber);
+        });
+        group.podStatus = group.invoices[0]?.podStatus || "Not Generated";
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -277,9 +351,18 @@ export const updateInvoiceStatus = async (req, res) => {
     const { plantId } = req.params;
     const { status, cancellationReason, reason } = req.body;
 
-    // Stamp deliveredAt when status becomes Delivered or cancelledAt when Cancelled
+    // Stamp timestamps when status transitions
     const updateData = { status };
-    if (status === "Delivered") {
+    if (status === "Assigned") {
+      updateData.assignedAt = new Date();
+      updateData.inTransitAt = null;
+      updateData.deliveredAt = null;
+      updateData.cancelledAt = null;
+    } else if (status === "In Transit") {
+      updateData.inTransitAt = new Date();
+      updateData.deliveredAt = null;
+      updateData.cancelledAt = null;
+    } else if (status === "Delivered") {
       updateData.deliveredAt = new Date();
       updateData.cancelledAt = null;
     } else if (status === "Cancelled") {
@@ -289,7 +372,9 @@ export const updateInvoiceStatus = async (req, res) => {
         updateData.cancellationReason = (cancellationReason || reason).trim();
       }
     } else {
-      // Reset stamps if status reverts (e.g., back to Assigned/Pending)
+      // Reset stamps if status reverts (e.g., back to Pending/Reassignment)
+      updateData.assignedAt = null;
+      updateData.inTransitAt = null;
       updateData.deliveredAt = null;
       updateData.cancelledAt = null;
     }
@@ -384,8 +469,11 @@ export const getInvoicesByPlant = async (req, res) => {
     const { plantNumber } = req.params;
 
     const invoices = await Invoice.find({
-      plantNumber,
-    }).sort({ invoiceDate: -1 });
+      $or: [
+        { plantReferenceNumber: plantNumber },
+        { plantNumber: plantNumber },
+      ],
+    }).sort({ invoiceDate: -1 }).lean();
 
     res.status(200).json({
       success: true,
@@ -461,7 +549,7 @@ export const getInvoiceHistory = async (req, res) => {
       ];
     }
 
-    const invoices = await Invoice.find(query).sort({ invoiceDate: -1, updatedAt: -1 });
+    const invoices = await Invoice.find(query).sort({ invoiceDate: -1, updatedAt: -1 }).lean();
 
     // Group by plant + customer (same as main list)
     const groupedMap = new Map();
@@ -506,17 +594,30 @@ export const getInvoiceHistory = async (req, res) => {
       return String(b.plantNumber || "").localeCompare(String(a.plantNumber || ""), undefined, { numeric: true, sensitivity: "base" });
     });
 
+    // PAGINATION
     const total = groupedData.length;
     const totalPages = Math.ceil(total / limit);
-    const paginated = groupedData.slice((page - 1) * limit, page * limit);
 
-    res.status(200).json({
-      success: true,
-      data: paginated,
-      pagination: { total, totalPages, currentPage: page },
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + limit;
+
+    const paginatedData = groupedData.slice(
+      startIndex,
+      endIndex
+    );
+
+    res.json({
+      data: paginatedData,
+      pagination: {
+        total,
+        totalPages,
+        page,
+        limit,
+      },
     });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 };
 
@@ -531,26 +632,40 @@ export const addInvoice = async (req, res) => {
       });
     }
 
+    const cleanPlantNumber = String(plantNumber).trim();
+    const cleanInvoiceNumber = String(invoiceNumber).trim();
+    const escapedPlant = cleanPlantNumber.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedInvoice = cleanInvoiceNumber.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    // Check if Plant Number already exists (prevent duplicate plant numbers)
+    const existingPlant = await Invoice.findOne({
+      plantReferenceNumber: { $regex: new RegExp(`^${escapedPlant}$`, "i") },
+    });
+
+    if (existingPlant) {
+      return res.status(400).json({
+        success: false,
+        message: `Plant Number "${cleanPlantNumber}" already exists. Duplicate plant numbers are not allowed.`,
+      });
+    }
+
+    // Check if Invoice Number already exists (prevent duplicate invoice numbers)
+    const existingInvoice = await Invoice.findOne({
+      invoiceNumber: { $regex: new RegExp(`^${escapedInvoice}$`, "i") },
+    });
+
+    if (existingInvoice) {
+      return res.status(400).json({
+        success: false,
+        message: `Invoice Number "${cleanInvoiceNumber}" already exists. Duplicate invoice numbers are not allowed.`,
+      });
+    }
+
     const parsedDate = parseDate(invoiceDate);
     if (!parsedDate) {
       return res.status(400).json({
         success: false,
         message: "Invalid invoice date format. Use dd/mm/yyyy (e.g. 01.07.2026)",
-      });
-    }
-
-    // Check unique constraint: plantReferenceNumber, customerName, invoiceNumber, invoiceDate
-    const existing = await Invoice.findOne({
-      plantReferenceNumber: plantNumber.trim(),
-      customerName: customerName.trim(),
-      invoiceNumber: invoiceNumber.trim(),
-      invoiceDate: parsedDate,
-    });
-
-    if (existing) {
-      return res.status(400).json({
-        success: false,
-        message: "Invoice already exists with the same Plant No, Customer Name, Invoice, and Invoice Date",
       });
     }
 
@@ -561,10 +676,10 @@ export const addInvoice = async (req, res) => {
     const computedQty = itemSum > 0 ? itemSum : (Number(quantity) || 0);
 
     const newInvoice = new Invoice({
-      plantReferenceNumber: plantNumber.trim(),
+      plantReferenceNumber: cleanPlantNumber,
       customerName: customerName.trim(),
       location: location?.trim() || "",
-      invoiceNumber: invoiceNumber.trim(),
+      invoiceNumber: cleanInvoiceNumber,
       invoiceDate: parsedDate,
       quantity: computedQty,
       weight: Number(weight) || 0,
@@ -586,6 +701,12 @@ export const addInvoice = async (req, res) => {
       data: newInvoice,
     });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "An invoice with this Invoice Number already exists.",
+      });
+    }
     console.error("Add invoice error:", error);
     res.status(500).json({
       success: false,
@@ -619,27 +740,42 @@ export const updateInvoice = async (req, res) => {
       });
     }
 
+    const cleanPlantNumber = String(plantNumber).trim();
+    const cleanInvoiceNumber = String(invoiceNumber).trim();
+    const escapedPlant = cleanPlantNumber.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapedInvoice = cleanInvoiceNumber.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    // Check if Plant Number is already used by another invoice
+    const existingPlant = await Invoice.findOne({
+      _id: { $ne: invoiceId },
+      plantReferenceNumber: { $regex: new RegExp(`^${escapedPlant}$`, "i") },
+    });
+
+    if (existingPlant) {
+      return res.status(400).json({
+        success: false,
+        message: `Plant Number "${cleanPlantNumber}" is already in use by another invoice. Duplicate plant numbers are not allowed.`,
+      });
+    }
+
+    // Check if Invoice Number is already used by another invoice
+    const existingInvoice = await Invoice.findOne({
+      _id: { $ne: invoiceId },
+      invoiceNumber: { $regex: new RegExp(`^${escapedInvoice}$`, "i") },
+    });
+
+    if (existingInvoice) {
+      return res.status(400).json({
+        success: false,
+        message: `Invoice Number "${cleanInvoiceNumber}" is already in use by another invoice. Duplicate invoice numbers are not allowed.`,
+      });
+    }
+
     const parsedDate = parseDate(invoiceDate);
     if (!parsedDate) {
       return res.status(400).json({
         success: false,
         message: "Invalid invoice date format.",
-      });
-    }
-
-    // Check unique constraint with other invoices
-    const existing = await Invoice.findOne({
-      _id: { $ne: invoiceId },
-      plantReferenceNumber: plantNumber.trim(),
-      customerName: customerName.trim(),
-      invoiceNumber: invoiceNumber.trim(),
-      invoiceDate: parsedDate,
-    });
-
-    if (existing) {
-      return res.status(400).json({
-        success: false,
-        message: "Another invoice already exists with the same Plant No, Customer Name, Invoice, and Invoice Date",
       });
     }
 
@@ -650,10 +786,10 @@ export const updateInvoice = async (req, res) => {
     const computedQty = itemSum > 0 ? itemSum : (Number(quantity) || 0);
 
     const updateFields = {
-      plantReferenceNumber: plantNumber.trim(),
+      plantReferenceNumber: cleanPlantNumber,
       customerName: customerName.trim(),
       location: location?.trim() || "",
-      invoiceNumber: invoiceNumber.trim(),
+      invoiceNumber: cleanInvoiceNumber,
       invoiceDate: parsedDate,
       quantity: computedQty,
       weight: Number(weight) || 0,
@@ -725,6 +861,12 @@ export const updateInvoice = async (req, res) => {
       data: updated,
     });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "An invoice with this Invoice Number already exists.",
+      });
+    }
     console.error("Update invoice error:", error);
     res.status(500).json({
       success: false,
@@ -738,12 +880,58 @@ export const updateInvoiceRemarks = async (req, res) => {
     const { invoiceId } = req.params;
     const { beforeDispatchRemarks, afterDispatchRemarks } = req.body;
 
+    const invoice = await Invoice.findById(invoiceId);
+    if (!invoice) return res.status(404).json({ success: false, message: "Invoice not found" });
+
     const updateData = {};
-    if (beforeDispatchRemarks !== undefined) updateData.beforeDispatchRemarks = String(beforeDispatchRemarks).trim();
-    if (afterDispatchRemarks !== undefined) updateData.afterDispatchRemarks = String(afterDispatchRemarks).trim();
+
+    // 1. Before Dispatch Remarks restriction:
+    // Accessible until status is "Assigned" for 1 day (24 hours).
+    if (beforeDispatchRemarks !== undefined) {
+      const status = invoice.status;
+      if (status === "Cancelled" || status === "In Transit" || status === "Delivered") {
+        return res.status(403).json({
+          success: false,
+          message: "Before Dispatch Remarks cannot be edited once the invoice is In Transit, Delivered, or Cancelled.",
+        });
+      }
+      if (status === "Assigned") {
+        const assignedTime = invoice.assignedAt
+          ? new Date(invoice.assignedAt).getTime()
+          : (invoice.updatedAt ? new Date(invoice.updatedAt).getTime() : null);
+        if (assignedTime && Date.now() - assignedTime > 24 * 60 * 60 * 1000) {
+          return res.status(403).json({
+            success: false,
+            message: "Before Dispatch Remarks editing window (24 hours after assignment) has expired.",
+          });
+        }
+      }
+      updateData.beforeDispatchRemarks = String(beforeDispatchRemarks).trim();
+    }
+
+    // 2. After Dispatch Remarks restriction:
+    // Accessible from "In Transit" for 1 week (7 days).
+    if (afterDispatchRemarks !== undefined) {
+      const status = invoice.status;
+      if (status === "Cancelled") {
+        return res.status(403).json({
+          success: false,
+          message: "After Dispatch Remarks cannot be edited for cancelled invoices.",
+        });
+      }
+      const inTransitTime = invoice.inTransitAt
+        ? new Date(invoice.inTransitAt).getTime()
+        : ((status === "In Transit" || status === "Delivered") && invoice.updatedAt ? new Date(invoice.updatedAt).getTime() : null);
+      if (inTransitTime && Date.now() - inTransitTime > 7 * 24 * 60 * 60 * 1000) {
+        return res.status(403).json({
+          success: false,
+          message: "After Dispatch Remarks editing window (7 days after In Transit) has expired.",
+        });
+      }
+      updateData.afterDispatchRemarks = String(afterDispatchRemarks).trim();
+    }
 
     const updated = await Invoice.findByIdAndUpdate(invoiceId, updateData, { new: true });
-    if (!updated) return res.status(404).json({ success: false, message: "Invoice not found" });
 
     if (req.io) req.io.emit("invoices:changed");
     res.json({ success: true, message: "Remarks updated", data: updated });

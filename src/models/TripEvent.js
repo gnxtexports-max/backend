@@ -33,6 +33,7 @@ const tripEventSchema = new mongoose.Schema(
         "TRIP_COMPLETED",
         "GPS_SIGNAL_LOST",
         "GPS_SIGNAL_RESTORED",
+        "GPS_OFFLINE",
         "STATUS_CHANGED",
       ],
       index: true,

@@ -2,10 +2,41 @@ import Shipment from "../models/shipment.model.js";
 import Invoice from "../models/invoice.model.js";
 import Vehicle from "../models/Vehicle.js";
 import Driver from "../models/Driver.js";
+import Supervisor from "../models/Supervisor.js";
 import { compressBase64DataUrl } from "../utils/compressImage.js";
 import { streamExcelExport, decodeBase64Image } from "../utils/exportToZip.js";
 import { syncSingleVehicle, syncSingleDriver } from "../utils/syncStatuses.js";
-import { uploadBase64ToR2, fetchImageForExcel } from "../services/r2.service.js";
+import { uploadBase64ToR2, fetchImageForExcel, deleteFromR2 } from "../services/r2.service.js";
+
+async function resolvePodImageUrls(podImages, existingImages = [], keyPrefix = "pod/img") {
+  if (!Array.isArray(podImages)) return [];
+  const resolved = await Promise.all(
+    podImages.map(async (img, idx) => {
+      if (!img) return "";
+      if (typeof img === "string" && img.startsWith("data:")) {
+        return await uploadBase64ToR2(img, `${keyPrefix}_idx_${idx}`);
+      }
+      if (typeof img === "string" && img.includes("/api/shipments/") && img.includes("/pod/")) {
+        const match = img.match(/\/pod\/(\d+)/);
+        const oldIdx = match ? parseInt(match[1], 10) : -1;
+        if (oldIdx >= 0 && Array.isArray(existingImages) && existingImages[oldIdx]) {
+          return existingImages[oldIdx];
+        }
+      }
+      return img;
+    })
+  );
+
+  // Automatically delete removed images from Cloudflare R2 bucket
+  if (Array.isArray(existingImages)) {
+    const removedUrls = existingImages.filter(oldUrl => oldUrl && !resolved.includes(oldUrl));
+    for (const removedUrl of removedUrls) {
+      deleteFromR2(removedUrl).catch(err => console.error("R2 deletion error:", err));
+    }
+  }
+
+  return resolved;
+}
 
 const syncInvoicesFromDestinations = async (destinations) => {
   if (!destinations?.length) return;
@@ -23,13 +54,20 @@ const syncInvoicesFromDestinations = async (destinations) => {
         if (d.invoiceIds?.length) {
           query._id = { $in: d.invoiceIds };
         }
-        await Invoice.updateMany(query, {
-          tyre,
-          tube,
-          flap,
-          weight,
-          quantity
-        });
+        const matchingInvoices = await Invoice.find(query).select("_id").lean();
+        if (matchingInvoices.length === 1) {
+          await Invoice.updateOne(
+            { _id: matchingInvoices[0]._id },
+            {
+              tyre,
+              tube,
+              flap,
+              weight,
+              quantity
+            }
+          );
+        }
+        // If there are multiple invoices under this plant reference, do NOT overwrite their individual tyre/weight counts with the aggregate sum!
       }
     } else {
       // Fallback for when plantData is empty (e.g. old shipments or single invoice destinations)
@@ -60,7 +98,7 @@ const syncInvoicesFromDestinations = async (destinations) => {
 ───────────────────────────────────────────────── */
 export const createShipment = async (req, res) => {
   try {
-    const { destinations, vehicleId, driverId, notes } = req.body;
+    const { destinations, vehicleId, driverId, supervisorId, notes } = req.body;
 
     if (!destinations?.length) {
       return res.status(400).json({ success: false, message: "At least one destination is required" });
@@ -68,12 +106,13 @@ export const createShipment = async (req, res) => {
     if (!vehicleId) return res.status(400).json({ success: false, message: "Vehicle is required" });
     if (!driverId) return res.status(400).json({ success: false, message: "Driver is required" });
 
-    // Validate vehicle exists
-    const vehicle = await Vehicle.findById(vehicleId).lean();
-    if (!vehicle) return res.status(404).json({ success: false, message: "Vehicle not found" });
+    const [vehicle, driver, supervisor] = await Promise.all([
+      Vehicle.findById(vehicleId).lean(),
+      Driver.findById(driverId).lean(),
+      supervisorId ? Supervisor.findById(supervisorId).lean() : Promise.resolve(null),
+    ]);
 
-    // Validate driver exists
-    const driver = await Driver.findById(driverId).lean();
+    if (!vehicle) return res.status(404).json({ success: false, message: "Vehicle not found" });
     if (!driver) return res.status(404).json({ success: false, message: "Driver not found" });
 
     // Build destination docs — resolve customerName + location from invoices
@@ -124,6 +163,9 @@ export const createShipment = async (req, res) => {
       driverId: driver._id,
       driverName: driver.name,
       driverPhone: driver.phone,
+      supervisorId: supervisor?._id || null,
+      supervisorName: supervisor?.name || "",
+      supervisorEmployeeId: supervisor?.employeeId || "",
       notes,
     });
 
@@ -156,7 +198,7 @@ export const createShipment = async (req, res) => {
 
       await Invoice.updateMany(
         { plantReferenceNumber: { $in: allPlantNumbers } },
-        { status: "Assigned" }
+        { status: "Assigned", assignedAt: new Date(), inTransitAt: null, deliveredAt: null, cancelledAt: null }
       );
     }
 
@@ -195,6 +237,8 @@ export const getShipments = async (req, res) => {
       }
     }
 
+    const andClauses = [];
+
     const start = fromDate || dateFrom;
     const end = toDate || dateTo;
     if (start || end) {
@@ -209,23 +253,33 @@ export const getShipments = async (req, res) => {
         e.setHours(23, 59, 59, 999);
         dateCond.$lte = e;
       }
-      query.$or = [
-        { deliveryDate: dateCond },
-        { dispatchDate: dateCond },
-        { createdAt: dateCond }
-      ];
+      andClauses.push({
+        $or: [
+          { deliveryDate: dateCond },
+          { dispatchDate: dateCond },
+          { createdAt: dateCond }
+        ]
+      });
     }
 
     if (search) {
       const r = { $regex: search, $options: "i" };
-      query.$or = [
-        { shipmentId: r },
-        { vehicleNumber: r },
-        { driverName: r },
-        { "destinations.plantReferenceNumber": r },
-        { "destinations.lrNumber": r },
-        { "destinations.customerName": r },
-      ];
+      andClauses.push({
+        $or: [
+          { shipmentId: r },
+          { vehicleNumber: r },
+          { driverName: r },
+          { supervisorName: r },
+          { supervisorEmployeeId: r },
+          { "destinations.plantReferenceNumber": r },
+          { "destinations.lrNumber": r },
+          { "destinations.customerName": r },
+        ]
+      });
+    }
+
+    if (andClauses.length > 0) {
+      query.$and = andClauses;
     }
 
     const isUnlimited = limit === "all" || Number(limit) === 0 || limit === "0";
@@ -246,30 +300,44 @@ export const getShipments = async (req, res) => {
       Shipment.countDocuments(query),
     ]);
 
-    // Backfill customerName + deliveryLocation for destinations that are missing them
-    // (records created before the denormalization fix)
-    const enriched = await Promise.all(shipments.map(async (s) => {
-      const destinations = await Promise.all((s.destinations ?? []).map(async (dest) => {
-        if (dest.customerName && dest.deliveryLocation) return dest; // already set
+    const missingPlantNumbers = [...new Set(shipments.flatMap(s =>
+      (s.destinations ?? [])
+        .filter(d => (!d.customerName || !d.deliveryLocation) && d.plantReferenceNumber)
+        .flatMap(d => d.plantReferenceNumber.split(",").map(p => p.trim()).filter(Boolean))
+    ))];
 
-        // Try populated invoices first
+    const fallbackInvoices = missingPlantNumbers.length > 0
+      ? await Invoice.find({ plantReferenceNumber: { $in: missingPlantNumbers } })
+          .select("plantReferenceNumber customerName location")
+          .lean()
+      : [];
+
+    const plantMap = new Map(fallbackInvoices.map(i => [i.plantReferenceNumber, i]));
+
+    const enriched = shipments.map((s) => {
+      const destinations = (s.destinations ?? []).map((dest) => {
+        if (dest.customerName && dest.deliveryLocation) return dest;
+
         const popInv = (dest.invoiceIds ?? []).find((inv) => typeof inv === "object");
         let customerName = dest.customerName || popInv?.customerName || "";
         let deliveryLocation = dest.deliveryLocation || popInv?.location || "";
 
-        // Fallback: look up by plantReferenceNumber
         if ((!customerName || !deliveryLocation) && dest.plantReferenceNumber) {
           const plantNumbers = dest.plantReferenceNumber.split(",").map(p => p.trim()).filter(Boolean);
-          const inv = await Invoice.findOne({ plantReferenceNumber: { $in: plantNumbers } })
-            .select("customerName location").lean();
-          customerName = customerName || inv?.customerName || "";
-          deliveryLocation = deliveryLocation || inv?.location || "";
+          for (const p of plantNumbers) {
+            const inv = plantMap.get(p);
+            if (inv) {
+              customerName = customerName || inv.customerName || "";
+              deliveryLocation = deliveryLocation || inv.location || "";
+              if (customerName && deliveryLocation) break;
+            }
+          }
         }
 
         return { ...dest, customerName, deliveryLocation };
-      }));
+      });
       return { ...s, destinations };
-    }));
+    });
 
     const formatted = enriched.map(s => {
       const baseUrl = `${req.protocol}://${req.get("host")}`;
@@ -277,7 +345,7 @@ export const getShipments = async (req, res) => {
         const podImages = (dest.podImages ?? []).map((img, idx) => {
           if (!img) return "";
           if (img.startsWith("http://") || img.startsWith("https://") || img.startsWith("data:")) {
-            return `${baseUrl}/api/shipments/${s.shipmentId}/pod/${idx}`;
+            return `${baseUrl}/api/shipments/${s.shipmentId}/pod/${idx}?destId=${dest._id}`;
           }
           return img;
         });
@@ -308,6 +376,7 @@ export const getShipmentById = async (req, res) => {
     const shipment = await Shipment.findById(req.params.id)
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
+      .populate("supervisorId", "name employeeId phone")
       .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
 
@@ -342,7 +411,7 @@ export const getShipmentById = async (req, res) => {
       const podImages = (dest.podImages ?? []).map((img, idx) => {
         if (!img) return "";
         if (img.startsWith("http://") || img.startsWith("https://") || img.startsWith("data:")) {
-          return `${baseUrl}/api/shipments/${shipment.shipmentId}/pod/${idx}`;
+          return `${baseUrl}/api/shipments/${shipment.shipmentId}/pod/${idx}?destId=${dest._id}`;
         }
         return img;
       });
@@ -380,13 +449,10 @@ export const updateShipmentStatus = async (req, res) => {
       if (podReceiverName !== undefined) dest.podReceiverName = podReceiverName;
       if (podRemarks !== undefined) dest.podRemarks = podRemarks;
       if (podImages !== undefined) {
-        dest.podImages = await Promise.all(
-          podImages.map(async (img, idx) => {
-            if (img && img.startsWith("data:")) {
-              return await uploadBase64ToR2(img, `pod/${shipment.shipmentId}_${dest._id || idx}`);
-            }
-            return img;
-          })
+        dest.podImages = await resolvePodImageUrls(
+          podImages,
+          dest.podImages,
+          `pod/${shipment.shipmentId}_${dest._id}`
         );
       }
 
@@ -404,20 +470,21 @@ export const updateShipmentStatus = async (req, res) => {
       // Sync invoice statuses (skip if shipment is Closed)
       if (dest.plantReferenceNumber && shipment.status !== "Closed") {
         let targetInvoiceStatus = "Assigned";
-        let deliveredAt = null;
+        const plantNumbers = dest.plantReferenceNumber.split(",").map(p => p.trim()).filter(Boolean);
+        const updateData = { status: targetInvoiceStatus };
+
         if (status === "Delivered") {
           targetInvoiceStatus = "Delivered";
-          deliveredAt = new Date();
+          updateData.status = "Delivered";
+          updateData.deliveredAt = new Date();
         } else if (status === "In Transit") {
           targetInvoiceStatus = "In Transit";
-        }
-
-        const plantNumbers = dest.plantReferenceNumber.split(",").map(p => p.trim()).filter(Boolean);
-
-        const updateData = { status: targetInvoiceStatus };
-        if (targetInvoiceStatus === "Delivered") {
-          updateData.deliveredAt = deliveredAt;
-        } else if (targetInvoiceStatus === "Pending" || targetInvoiceStatus === "Assigned" || targetInvoiceStatus === "In Transit") {
+          updateData.status = "In Transit";
+          updateData.inTransitAt = new Date();
+          updateData.deliveredAt = null;
+        } else if (status === "Pending") {
+          targetInvoiceStatus = "Assigned";
+          updateData.status = "Assigned";
           updateData.deliveredAt = null;
         }
 
@@ -435,6 +502,7 @@ export const updateShipmentStatus = async (req, res) => {
       const populatedShipment = await Shipment.findById(shipment._id)
         .populate("vehicleId", "vehicleNo type model capacityKg")
         .populate("driverId", "name phone licenseNumber driverType")
+        .populate("supervisorId", "name employeeId phone")
         .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
         .lean();
 
@@ -467,6 +535,7 @@ export const updateShipmentStatus = async (req, res) => {
     )
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
+      .populate("supervisorId", "name employeeId phone")
       .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
     if (!shipment) return res.status(404).json({ success: false, message: "Shipment not found" });
@@ -487,20 +556,26 @@ export const updateShipmentStatus = async (req, res) => {
 
     if (allPlantNumbers.length) {
       let targetInvoiceStatus = "Assigned";
-      let deliveredAt = null;
+      const updateData = {};
+
       if (status === "In Transit") {
         targetInvoiceStatus = "In Transit";
+        updateData.status = "In Transit";
+        updateData.inTransitAt = new Date();
+        updateData.deliveredAt = null;
       } else if (status === "Delivered" || status === "Closed") {
         targetInvoiceStatus = "Delivered";
-        deliveredAt = new Date();
+        updateData.status = "Delivered";
+        updateData.deliveredAt = new Date();
       } else if (status === "Cancelled") {
         targetInvoiceStatus = "Pending";
-      }
-
-      const updateData = { status: targetInvoiceStatus };
-      if (targetInvoiceStatus === "Delivered") {
-        updateData.deliveredAt = deliveredAt;
-      } else if (targetInvoiceStatus === "Pending" || targetInvoiceStatus === "Assigned" || targetInvoiceStatus === "In Transit") {
+        updateData.status = "Pending";
+        updateData.assignedAt = null;
+        updateData.inTransitAt = null;
+        updateData.deliveredAt = null;
+      } else {
+        targetInvoiceStatus = "Assigned";
+        updateData.status = "Assigned";
         updateData.deliveredAt = null;
       }
 
@@ -539,26 +614,20 @@ export const updateShipmentPOD = async (req, res) => {
       if (podReceiverName !== undefined) dest.podReceiverName = podReceiverName;
       if (podRemarks !== undefined) dest.podRemarks = podRemarks;
       if (podImages !== undefined) {
-        dest.podImages = await Promise.all(
-          podImages.map(async (img, idx) => {
-            if (img && img.startsWith("data:")) {
-              return await uploadBase64ToR2(img, `pod/${shipment.shipmentId}_${dest._id || idx}`);
-            }
-            return img;
-          })
+        dest.podImages = await resolvePodImageUrls(
+          podImages,
+          dest.podImages,
+          `pod/${shipment.shipmentId}_${dest._id}`
         );
       }
     } else {
       if (podReceiverName !== undefined) shipment.podReceiverName = podReceiverName;
       if (podRemarks !== undefined) shipment.podRemarks = podRemarks;
       if (podImages !== undefined) {
-        shipment.podImages = await Promise.all(
-          podImages.map(async (img, idx) => {
-            if (img && img.startsWith("data:")) {
-              return await uploadBase64ToR2(img, `pod/${shipment.shipmentId}_top_${idx}`);
-            }
-            return img;
-          })
+        shipment.podImages = await resolvePodImageUrls(
+          podImages,
+          shipment.podImages,
+          `pod/${shipment.shipmentId}_top`
         );
       }
     }
@@ -570,6 +639,7 @@ export const updateShipmentPOD = async (req, res) => {
     const populated = await Shipment.findById(shipment._id)
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
+      .populate("supervisorId", "name employeeId phone")
       .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
 
@@ -579,7 +649,7 @@ export const updateShipmentPOD = async (req, res) => {
         const podImages = (dest.podImages ?? []).map((img, idx) => {
           if (!img) return "";
           if (img.startsWith("http://") || img.startsWith("https://") || img.startsWith("data:")) {
-            return `${baseUrl}/api/shipments/${populated.shipmentId}/pod/${idx}`;
+            return `${baseUrl}/api/shipments/${populated.shipmentId}/pod/${idx}?destId=${dest._id}`;
           }
           return img;
         });
@@ -633,6 +703,7 @@ export const markArrival = async (req, res) => {
     const populated = await Shipment.findById(shipment._id)
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
+      .populate("supervisorId", "name employeeId phone")
       .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
 
@@ -648,7 +719,7 @@ export const markArrival = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const updateShipment = async (req, res) => {
   try {
-    const { destinations, vehicleId, driverId, notes } = req.body;
+    const { destinations, vehicleId, driverId, supervisorId, notes } = req.body;
 
     // Fetch existing shipment to handle vehicle/driver swaps
     const existing = await Shipment.findById(req.params.id).lean();
@@ -656,8 +727,15 @@ export const updateShipment = async (req, res) => {
 
     const vehicle = vehicleId ? await Vehicle.findById(vehicleId).lean() : null;
     const driver = driverId ? await Driver.findById(driverId).lean() : null;
+    const supervisor = supervisorId ? await Supervisor.findById(supervisorId).lean() : null;
 
     const update = { notes };
+
+    if (supervisorId !== undefined) {
+      update.supervisorId = supervisor?._id || null;
+      update.supervisorName = supervisor?.name || "";
+      update.supervisorEmployeeId = supervisor?.employeeId || "";
+    }
 
     // ── Vehicle change ──────────────────────────────
     if (vehicle) {
@@ -762,7 +840,7 @@ export const updateShipment = async (req, res) => {
       if (oldPlantNumbers.length) {
         await Invoice.updateMany(
           { plantReferenceNumber: { $in: oldPlantNumbers } },
-          { status: "Pending" }
+          { status: "Pending", assignedAt: null, inTransitAt: null, deliveredAt: null }
         );
       }
 
@@ -777,20 +855,27 @@ export const updateShipment = async (req, res) => {
       if (newPlantNumbers.length) {
         const targetStatus = update.status || existing.status || "Assigned";
         let invoiceStatus = "Assigned";
-        let deliveredAt = null;
+        const updateData = {};
+
         if (targetStatus === "In Transit") {
           invoiceStatus = "In Transit";
+          updateData.status = "In Transit";
+          updateData.inTransitAt = new Date();
+          updateData.deliveredAt = null;
         } else if (targetStatus === "Delivered" || targetStatus === "Closed") {
           invoiceStatus = "Delivered";
-          deliveredAt = new Date();
+          updateData.status = "Delivered";
+          updateData.deliveredAt = new Date();
         } else if (targetStatus === "Cancelled") {
           invoiceStatus = "Pending";
-        }
-
-        const updateData = { status: invoiceStatus };
-        if (invoiceStatus === "Delivered") {
-          updateData.deliveredAt = deliveredAt;
+          updateData.status = "Pending";
+          updateData.assignedAt = null;
+          updateData.inTransitAt = null;
+          updateData.deliveredAt = null;
         } else {
+          invoiceStatus = "Assigned";
+          updateData.status = "Assigned";
+          updateData.assignedAt = new Date();
           updateData.deliveredAt = null;
         }
 
@@ -807,6 +892,7 @@ export const updateShipment = async (req, res) => {
     const shipment = await Shipment.findByIdAndUpdate(req.params.id, update, { returnDocument: "after" })
       .populate("vehicleId", "vehicleNo type model capacityKg")
       .populate("driverId", "name phone licenseNumber driverType")
+      .populate("supervisorId", "name employeeId phone")
       .populate("destinations.invoiceIds", "invoiceNumber invoiceDate plantReferenceNumber customerName location weight quantity tyre tube flap")
       .lean();
 
@@ -866,7 +952,10 @@ export const deleteShipment = async (req, res) => {
       }
 
       if (invoicesToRevert.length > 0) {
-        await Invoice.updateMany({ _id: { $in: invoicesToRevert } }, { status: "Pending" });
+        await Invoice.updateMany(
+          { _id: { $in: invoicesToRevert } },
+          { status: "Pending", assignedAt: null, inTransitAt: null, deliveredAt: null }
+        );
       }
     }
 
@@ -1175,6 +1264,7 @@ export const exportShipments = async (req, res) => {
 export const getShipmentPodImage = async (req, res) => {
   try {
     const { id, podIndex } = req.params;
+    const { destId } = req.query;
     const idx = parseInt(podIndex, 10);
 
     if (isNaN(idx) || idx < 0) {
@@ -1186,39 +1276,43 @@ export const getShipmentPodImage = async (req, res) => {
       return res.status(404).send("Shipment not found");
     }
 
-    // Check destination-level images first
-    for (const dest of shipment.destinations ?? []) {
-      if (dest.podImages && dest.podImages[idx]) {
-        const dataUrl = dest.podImages[idx];
-        if (dataUrl.startsWith("http://") || dataUrl.startsWith("https://")) {
-          const imgData = await fetchImageForExcel(dataUrl);
-          if (imgData && imgData.buffer) {
-            res.setHeader("Content-Type", `image/${imgData.extension || "jpeg"}`);
-            return res.send(imgData.buffer);
-          }
-          return res.redirect(dataUrl);
-        }
-        const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
-        if (match) {
-          const buffer = Buffer.from(match[2], "base64");
-          res.setHeader("Content-Type", `image/${match[1]}`);
-          return res.send(buffer);
+    let targetDataUrl = null;
+
+    if (destId) {
+      const targetDest = (shipment.destinations ?? []).find(d => d._id?.toString() === destId);
+      if (targetDest && targetDest.podImages && targetDest.podImages[idx]) {
+        targetDataUrl = targetDest.podImages[idx];
+      }
+    }
+
+    if (!targetDataUrl) {
+      for (const dest of shipment.destinations ?? []) {
+        if (dest.podImages && dest.podImages[idx]) {
+          targetDataUrl = dest.podImages[idx];
+          break;
         }
       }
     }
 
-    // Check shipment-level images (legacy)
-    if (shipment.podImages && shipment.podImages[idx]) {
-      const dataUrl = shipment.podImages[idx];
-      if (dataUrl.startsWith("http://") || dataUrl.startsWith("https://")) {
-        const imgData = await fetchImageForExcel(dataUrl);
-        if (imgData && imgData.buffer) {
-          res.setHeader("Content-Type", `image/${imgData.extension || "jpeg"}`);
-          return res.send(imgData.buffer);
-        }
-        return res.redirect(dataUrl);
+    if (!targetDataUrl && shipment.podImages && shipment.podImages[idx]) {
+      targetDataUrl = shipment.podImages[idx];
+    }
+
+    if (!targetDataUrl) {
+      return res.status(404).send("POD image not found");
+    }
+
+    if (targetDataUrl.startsWith("http://") || targetDataUrl.startsWith("https://")) {
+      const imgData = await fetchImageForExcel(targetDataUrl);
+      if (imgData && imgData.buffer) {
+        res.setHeader("Content-Type", `image/${imgData.extension || "jpeg"}`);
+        return res.send(imgData.buffer);
       }
-      const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+      return res.redirect(targetDataUrl);
+    }
+
+    if (targetDataUrl.startsWith("data:")) {
+      const match = targetDataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
       if (match) {
         const buffer = Buffer.from(match[2], "base64");
         res.setHeader("Content-Type", `image/${match[1]}`);
@@ -1226,7 +1320,7 @@ export const getShipmentPodImage = async (req, res) => {
       }
     }
 
-    res.status(404).send("POD image not found");
+    return res.redirect(targetDataUrl);
   } catch (err) {
     res.status(500).send("Error retrieving POD image: " + err.message);
   }

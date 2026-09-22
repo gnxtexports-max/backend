@@ -25,14 +25,30 @@ const getIp = (req) =>
 /* ── GET /api/users ── */
 export const getUsers = async (req, res) => {
   try {
-    const users = await User.find({ username: { $not: /^template_/ } }).sort({ createdAt: -1 });
-    // Attach last login from ActivityLog for each user
-    const result = await Promise.all(users.map(async (u) => {
-      const log = await ActivityLog.findOne({ userId: u._id, action: "Login", status: "Success" })
-        .sort({ createdAt: -1 }).lean();
-      return { ...u.toJSON(), lastLogin: log?.createdAt ?? u.lastLogin ?? null };
-    }));
-    res.status(200).json({ success: true, data: result });
+    const users = await User.aggregate([
+      { $match: { username: { $not: /^template_/ } } },
+      { $sort: { createdAt: -1 } },
+      {
+        $lookup: {
+          from: "activitylogs",
+          let: { uid: "$_id" },
+          pipeline: [
+            { $match: { $expr: { $and: [{ $eq: ["$userId", "$$uid"] }, { $eq: ["$action", "Login"] }, { $eq: ["$status", "Success"] }] } } },
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 },
+            { $project: { createdAt: 1 } }
+          ],
+          as: "lastLoginLog"
+        }
+      },
+      {
+        $addFields: {
+          lastLogin: { $ifNull: [{ $arrayElemAt: ["$lastLoginLog.createdAt", 0] }, "$lastLogin"] }
+        }
+      },
+      { $project: { password: 0, lastLoginLog: 0 } }
+    ]);
+    res.status(200).json({ success: true, data: users });
   } catch (err) {
     res.status(500).json({ success: false, message: "Error fetching users", error: err.message });
   }

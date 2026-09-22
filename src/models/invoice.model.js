@@ -63,6 +63,18 @@ const invoiceSchema = new mongoose.Schema(
       min: 0,
     },
 
+    // Stamped the moment status becomes "Assigned" — used for 24-hr remarks editing rule
+    assignedAt: {
+      type: Date,
+      default: null,
+    },
+
+    // Stamped the moment status becomes "In Transit" — used for 7-day remarks editing rule
+    inTransitAt: {
+      type: Date,
+      default: null,
+    },
+
     // Stamped the moment status becomes "Delivered" — used for 5-min auto-history rule
     deliveredAt: {
       type: Date,
@@ -96,15 +108,15 @@ const invoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// COMPOSITE UNIQUE INDEX on all 4 fields
+// Unique index on invoiceNumber to strictly prevent duplicates across dates, plants, or uploads
 invoiceSchema.index(
-  { 
-    plantReferenceNumber: 1, 
-    customerName: 1, 
-    invoiceNumber: 1, 
-    invoiceDate: 1 
-  }, 
+  { invoiceNumber: 1 }, 
   { unique: true }
+);
+
+// Compound index for fast queries and grouping by plantReferenceNumber & customerName
+invoiceSchema.index(
+  { plantReferenceNumber: 1, customerName: 1 }
 );
 
 export default mongoose.model("Invoice", invoiceSchema);

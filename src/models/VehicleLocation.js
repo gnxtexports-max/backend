@@ -26,7 +26,7 @@ const vehicleLocationSchema = new mongoose.Schema(
     // Derived status
     vehicleStatus: {
       type: String,
-      enum: ["Moving", "Stopped", "Idle"],
+      enum: ["Moving", "Stopped", "Idle", "Offline"],
       default: "Idle",
     },
 

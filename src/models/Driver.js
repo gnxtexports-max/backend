@@ -9,17 +9,17 @@ const driverSchema = new mongoose.Schema(
     },
     age: {
       type: Number,
-      required: [true, "Age is required"],
       min: [18, "Driver must be at least 18 years old"],
       max: [65, "Driver must be younger than 65 years"],
     },
     phone: {
       type: String,
-      required: [true, "Phone number is required"],
+      sparse: true,
       unique: true,
       trim: true,
       validate: {
         validator: function (v) {
+          if (!v) return true;
           return /^\+?[0-9\s-()]{10,}$/.test(v);
         },
         message: "Phone number must be valid (at least 10 digits)",
@@ -27,7 +27,7 @@ const driverSchema = new mongoose.Schema(
     },
     licenseNumber: {
       type: String,
-      required: [true, "License number is required"],
+      sparse: true,
       unique: true,
       trim: true,
       uppercase: true,

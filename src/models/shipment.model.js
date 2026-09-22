@@ -136,6 +136,14 @@ const shipmentSchema = new mongoose.Schema(
     },
     driverName: { type: String, required: true, trim: true },
     driverPhone: { type: String, trim: true },
+    // Supervisor reference
+    supervisorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Supervisor",
+      default: null,
+    },
+    supervisorName: { type: String, trim: true, default: "" },
+    supervisorEmployeeId: { type: String, trim: true, default: "" },
     // Totals (denormalised for quick reads)
     totalWeightKg: { type: Number, default: 0 },
     totalQuantity: { type: Number, default: 0 },
@@ -176,5 +184,8 @@ shipmentSchema.pre("save", async function () {
     this.totalQuantity = this.destinations.reduce((s, d) => s + (d.totalQuantity || 0), 0);
   }
 });
+
+// Index for fast LR lookup across destinations
+shipmentSchema.index({ "destinations.lrNumber": 1 });
 
 export default mongoose.model("Shipment", shipmentSchema);

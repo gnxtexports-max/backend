@@ -20,10 +20,10 @@ import { authenticate, requirePermission, requireSuperAdmin } from "../middlewar
 
 const router = express.Router();
 
-// Public media endpoint for POD images
-router.get("/:id/pod/:podIndex", getShipmentPodImage);
-
 router.use(authenticate);
+
+// Protected media endpoint for POD images
+router.get("/:id/pod/:podIndex", requirePermission("Shipments", "view"), getShipmentPodImage);
 
 // Preview next auto-generated IDs (must be before /:id)
 router.get("/next-id", requirePermission("Shipments", "view"), getNextShipmentId);

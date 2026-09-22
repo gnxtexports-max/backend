@@ -7,12 +7,6 @@ export const authenticate = async (req, res, next) => {
       return res.status(401).json({ success: false, message: "Not authenticated" });
     }
 
-    // Bypass database lookup if static admin user ID
-    if (userId === "000000000000000000000001") {
-      req.user = { id: "000000000000000000000001", username: "admin", role: "Super Admin" };
-      return next();
-    }
-
     let user;
     try {
       user = await User.findById(userId).select("-password");
@@ -81,7 +75,7 @@ export const requirePermission = (moduleName, action) => {
       (moduleName?.toLowerCase() === "vehicles" || moduleName?.toLowerCase() === "shipments") &&
       userPermissions.some(p => p.module?.toLowerCase() === "trip tracking" && p.view);
     const hasShipmentAccess = action?.toLowerCase() === "view" &&
-      (moduleName?.toLowerCase() === "vehicles" || moduleName?.toLowerCase() === "drivers") &&
+      (moduleName?.toLowerCase() === "vehicles" || moduleName?.toLowerCase() === "drivers" || moduleName?.toLowerCase() === "supervisors") &&
       userPermissions.some(p => p.module?.toLowerCase().includes("shipment") && (p.view || p.create || p.edit));
 
     if (!hasModuleAccess && !hasTripTrackingViewAccess && !hasShipmentAccess) {

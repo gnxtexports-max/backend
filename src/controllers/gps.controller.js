@@ -40,10 +40,11 @@ export const receiveGpsWebhook = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const getVehicleLocation = async (req, res) => {
   try {
-    const vehicleNo = decodeURIComponent(req.params.vehicleNo).trim().toUpperCase();
+    const rawNo = decodeURIComponent(req.params.vehicleNo).trim().toUpperCase();
+    const cleanNo = rawNo.replace(/\s+/g, "");
 
     const loc = await VehicleLocation.findOne({
-      vehicleNo: { $regex: new RegExp(`^${vehicleNo.replace(/\s/g, "\\s*")}$`, "i") },
+      $or: [{ vehicleNo: rawNo }, { vehicleNo: cleanNo }]
     })
       .select("-rawPayload -history")
       .lean();
@@ -64,12 +65,13 @@ export const getVehicleLocation = async (req, res) => {
 ───────────────────────────────────────────────── */
 export const getVehicleHistory = async (req, res) => {
   try {
-    const vehicleNo = decodeURIComponent(req.params.vehicleNo).trim().toUpperCase();
+    const rawNo = decodeURIComponent(req.params.vehicleNo).trim().toUpperCase();
+    const cleanNo = rawNo.replace(/\s+/g, "");
     const limit     = Math.min(parseInt(req.query.limit) || 100, 500);
 
     // Use GpsLog for accurate history (ordered, deduplicated)
     const logs = await GpsLog.find({
-      vehicleNo: { $regex: new RegExp(`^${vehicleNo.replace(/\s/g, "\\s*")}$`, "i") },
+      $or: [{ vehicleNo: rawNo }, { vehicleNo: cleanNo }]
     })
       .sort({ gpsTimestamp: -1 })
       .limit(limit)
@@ -79,7 +81,7 @@ export const getVehicleHistory = async (req, res) => {
     if (!logs.length) {
       // Fallback to VehicleLocation history
       const loc = await VehicleLocation.findOne({
-        vehicleNo: { $regex: new RegExp(`^${vehicleNo.replace(/\s/g, "\\s*")}$`, "i") },
+        $or: [{ vehicleNo: rawNo }, { vehicleNo: cleanNo }]
       })
         .select("history")
         .lean();

@@ -13,36 +13,19 @@ const expenseSchema = new mongoose.Schema(
     driverName:  { type: String, trim: true, default: "" },
     shipmentId:  { type: mongoose.Schema.Types.ObjectId, ref: "Shipment" },
 
-    // Category: "dispatch" (Shipment Based) or "maintenance" (Vehicle Based)
+    // Category: "dispatch" (Shipment Based), "maintenance" (Vehicle Based), or "miscellaneous"
     category: {
       type: String,
-      enum: ["dispatch", "maintenance"],
+      enum: ["dispatch", "maintenance", "miscellaneous"],
       default: "dispatch",
     },
+    // Weight (KG) and KM for dispatch expenses
+    weight: { type: Number, default: 0 },
+    km: { type: Number, default: 0 },
     items: [
       {
         expenseType: {
           type: String,
-          enum: [
-            // Dispatch Types
-            "Fuel",
-            "Toll",
-            "Driver",
-            "Market Vehicle",
-            "Overtime",
-            "Miscellaneous",
-            "MVD Penalty",
-            "Loading/Unloading",
-            "Driver Allowance",
-            "Maintenance",
-            // Maintenance Types
-            "Insurance",
-            "Pollution",
-            "Fitness",
-            "Tax",
-            "Tyre Purchase",
-            "Repair",
-          ],
           required: true,
         },
         amount: { type: Number, required: true, min: 0 },

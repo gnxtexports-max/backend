@@ -4,7 +4,7 @@ import Vehicle from "../models/Vehicle.js";
 import Driver from "../models/Driver.js";
 import { streamExcelExport, decodeBase64Image } from "../utils/exportToZip.js";
 import { compressBase64DataUrl } from "../utils/compressImage.js";
-import { uploadBase64ToR2, fetchImageForExcel } from "../services/r2.service.js";
+import { uploadBase64ToR2, fetchImageForExcel, getFileBuffer } from "../services/r2.service.js";
 import path from "path";
 import fs from "fs";
 
@@ -14,7 +14,7 @@ import fs from "fs";
  ───────────────────────────────────────────────── */
 export const getExpenses = async (req, res) => {
   try {
-    const { lrNumber, vehicleId, driverId, dateFrom, dateTo, fromDate, toDate, tripId, category } = req.query;
+    const { lrNumber, vehicleId, driverId, dateFrom, dateTo, fromDate, toDate, tripId, category, page, limit } = req.query;
     const query = {};
 
     if (category) query.category = category;
@@ -39,24 +39,48 @@ export const getExpenses = async (req, res) => {
       }
     }
 
-    const expenses = await Expense.find(query)
-      .sort({ date: -1 })
-      .lean();
+    const isPaginated = req.query.page !== undefined;
+    const pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.max(1, Number(limit) || 20);
+    const skip = (pageNum - 1) * limitNum;
 
-    // Dynamically resolve missing tripId values for complete resilience
-    const shipments = await Shipment.find({})
-      .select("_id shipmentId destinations.lrNumber")
-      .lean();
+    let expenseQuery = Expense.find(query)
+      .select("tripId lrNumber vehicleNo vehicleId driverId driverName category weight km items totalAmount date notes receiptUrl paymentMode status")
+      .sort({ date: -1 });
+
+    if (isPaginated) {
+      expenseQuery = expenseQuery.skip(skip).limit(limitNum);
+    }
+
+    const [expenses, total] = await Promise.all([
+      expenseQuery.lean(),
+      isPaginated ? Expense.countDocuments(query) : Promise.resolve(null),
+    ]);
+
+    // Dynamically resolve missing tripId values for unlinked expenses only
+    const unlinkedShipmentIds = expenses.filter(e => !e.tripId && e.shipmentId).map(e => e.shipmentId);
+    const unlinkedLrNumbers = expenses.filter(e => !e.tripId && e.lrNumber).map(e => e.lrNumber);
 
     const shipmentMapByRef = new Map();
     const shipmentMapByLr = new Map();
 
-    shipments.forEach((s) => {
-      if (s._id) shipmentMapByRef.set(s._id.toString(), s.shipmentId);
-      s.destinations?.forEach((d) => {
-        if (d.lrNumber) shipmentMapByLr.set(d.lrNumber, s.shipmentId);
+    if (unlinkedShipmentIds.length > 0 || unlinkedLrNumbers.length > 0) {
+      const shipments = await Shipment.find({
+        $or: [
+          ...(unlinkedShipmentIds.length ? [{ _id: { $in: unlinkedShipmentIds } }] : []),
+          ...(unlinkedLrNumbers.length ? [{ "destinations.lrNumber": { $in: unlinkedLrNumbers } }] : []),
+        ]
+      })
+        .select("_id shipmentId destinations.lrNumber")
+        .lean();
+
+      shipments.forEach((s) => {
+        if (s._id) shipmentMapByRef.set(s._id.toString(), s.shipmentId);
+        s.destinations?.forEach((d) => {
+          if (d.lrNumber) shipmentMapByLr.set(d.lrNumber, s.shipmentId);
+        });
       });
-    });
+    }
 
     // Shape response to match what the frontend expects
     const shaped = expenses.map((e) => {
@@ -79,10 +103,25 @@ export const getExpenses = async (req, res) => {
         tripId: resolvedTripId,
         vehicleId: e.vehicleNo || e.vehicleId?.toString() || "",
         driverName: e.driverName || "",
+        weight: e.weight || 0,
+        km: e.km || 0,
         amount: e.totalAmount !== undefined ? e.totalAmount : (e.amount || 0),
         receiptUrl: formattedReceiptUrl,
       };
     });
+
+    if (isPaginated) {
+      return res.status(200).json({
+        success: true,
+        data: shaped,
+        pagination: {
+          total,
+          totalPages: Math.ceil(total / limitNum),
+          currentPage: pageNum,
+          limit: limitNum,
+        },
+      });
+    }
 
     res.status(200).json(shaped);
   } catch (err) {
@@ -100,12 +139,14 @@ export const createExpense = async (req, res) => {
     const {
       category = "dispatch",
       tripId,
-      entries, // Array of { lrNumber, items, date, notes, receiptUrl, paymentMode, category }
+      entries, // Array of { lrNumber, items, date, notes, receiptUrl, paymentMode, category, weight, km, driverName, driverId, vehicleId, vehicleNo }
       lrNumber,
       vehicleId,
       vehicleNo: inputVehicleNo,
       driverId,
       driverName: inputDriverName,
+      weight,
+      km,
       items,
       date,
       notes,
@@ -190,8 +231,10 @@ export const createExpense = async (req, res) => {
           vehicleId: finalVehicleId,
           vehicleNo,
           driverId: finalDriverId,
-          driverName,
+          driverName: entry.driverName || driverName,
           shipmentId: resolved.shipmentRef || undefined,
+          weight: Number(entry.weight !== undefined ? entry.weight : weight) || 0,
+          km: Number(entry.km !== undefined ? entry.km : km) || 0,
           items: entryItems,
           totalAmount,
           date: entry.date ? new Date(entry.date) : new Date(),
@@ -201,12 +244,14 @@ export const createExpense = async (req, res) => {
           status: "Pending",
         });
 
+        const baseUrl = `${req.protocol}://${req.get("host")}`;
         createdExpenses.push({
           ...exp.toObject(),
           category: exp.category || "dispatch",
           vehicleId: exp.vehicleNo || exp.vehicleId?.toString() || "",
           driverName: exp.driverName || "",
           amount: exp.totalAmount !== undefined ? exp.totalAmount : 0,
+          receiptUrl: exp.receiptUrl ? `${baseUrl}/api/expenses/${exp._id}/receipt` : "",
         });
       }
 
@@ -250,6 +295,8 @@ export const createExpense = async (req, res) => {
       driverId: finalDriverId,
       driverName,
       shipmentId: resolved.shipmentRef || undefined,
+      weight: Number(weight) || 0,
+      km: Number(km) || 0,
       items,
       totalAmount,
       date: date ? new Date(date) : new Date(),
@@ -296,7 +343,7 @@ export const getExpenseById = async (req, res) => {
  ───────────────────────────────────────────────── */
 export const updateExpense = async (req, res) => {
   try {
-    const { items, date, notes, lrNumber, receiptUrl, paymentMode, status } = req.body;
+    const { items, date, notes, lrNumber, receiptUrl, paymentMode, status, weight, km, driverName } = req.body;
 
     const update = {};
     if (items && Array.isArray(items)) {
@@ -306,6 +353,9 @@ export const updateExpense = async (req, res) => {
     if (date) update.date = new Date(date);
     if (notes !== undefined) update.notes = notes;
     if (lrNumber !== undefined) update.lrNumber = lrNumber;
+    if (weight !== undefined) update.weight = Number(weight) || 0;
+    if (km !== undefined) update.km = Number(km) || 0;
+    if (driverName !== undefined) update.driverName = driverName;
     if (receiptUrl !== undefined) update.receiptUrl = receiptUrl ? await uploadBase64ToR2(receiptUrl, `receipts/exp_${req.params.id}`) : "";
     if (paymentMode !== undefined) update.paymentMode = paymentMode;
     if (status !== undefined) update.status = status;
@@ -495,7 +545,7 @@ export const exportExpenses = async (req, res) => {
 
 /* ─────────────────────────────────────────────────
    GET /api/expenses/:id/receipt
-   Serve the receipt image by expense ID
+   Serve the receipt image or PDF by expense ID
  ───────────────────────────────────────────────── */
 export const getExpenseReceipt = async (req, res) => {
   try {
@@ -504,33 +554,20 @@ export const getExpenseReceipt = async (req, res) => {
       return res.status(404).send("Receipt not found");
     }
 
-    if (expense.receiptUrl.startsWith("http://") || expense.receiptUrl.startsWith("https://")) {
-      const imgData = await fetchImageForExcel(expense.receiptUrl);
-      if (imgData && imgData.buffer) {
-        res.setHeader("Content-Type", `image/${imgData.extension || "jpeg"}`);
-        return res.send(imgData.buffer);
-      }
-      return res.redirect(expense.receiptUrl);
-    }
-
-    if (expense.receiptUrl.startsWith("data:")) {
-      const match = expense.receiptUrl.match(/^data:image\/(\w+);base64,(.+)$/);
-      if (match) {
-        const contentType = `image/${match[1]}`;
-        const buffer = Buffer.from(match[2], "base64");
-        res.setHeader("Content-Type", contentType);
-        return res.send(buffer);
-      }
-    }
-
-    const receiptFilename = path.basename(expense.receiptUrl);
-    const sourcePath = path.join(process.cwd(), "uploads", receiptFilename);
-    if (fs.existsSync(sourcePath)) {
-      return res.sendFile(sourcePath);
+    const file = await getFileBuffer(expense.receiptUrl);
+    if (file && file.buffer) {
+      res.setHeader("Content-Type", file.contentType);
+      const isPdf = file.contentType.includes("pdf") || expense.receiptUrl.toLowerCase().includes(".pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="receipt_${expense._id}.${isPdf ? "pdf" : "jpg"}"`
+      );
+      return res.send(file.buffer);
     }
 
     res.status(404).send("Receipt image not found");
   } catch (err) {
+    console.error("[getExpenseReceipt] error:", err);
     res.status(500).send("Error retrieving receipt: " + err.message);
   }
 };

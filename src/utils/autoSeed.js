@@ -2,14 +2,16 @@ import User from "../models/User.js";
 import ActivityLog from "../models/ActivityLog.js";
 
 const SUPER_ADMIN_MODULES = [
-  "Shipments & LR Management",
-  "Fleet & Vehicle Tracking",
-  "Invoice & Finance",
-  "Master Data (Dealers/Products)",
-  "User & Role Management",
-  "Reports & Analytics",
-  "Expenses",
+  "Dashboard",
+  "Shipments",
   "Trip Tracking",
+  "Invoices",
+  "Expenses",
+  "Vehicles",
+  "Drivers",
+  "Reports",
+  "Help & Support",
+  "Users",
 ];
 
 const fullAccess = SUPER_ADMIN_MODULES.map((m) => ({
@@ -32,11 +34,11 @@ export const autoSeedSuperAdmin = async () => {
     });
 
     if (!superAdmin) {
-      console.log("⚙️  Auto-seeding Super Admin user...");
+      console.log("⚙️  Auto-seeding initial Super Admin user...");
       superAdmin = new User({
         username: "admin",
         email: "admin@gnxt.com",
-        password: "gnxt@admin@123", // Will be hashed automatically by the pre-save hook
+        password: "gnxt@admin@123", // Initial bootstrap password; hashed automatically by pre-save hook
         role: "Super Admin",
         branch: "All Branches",
         status: "Active",
@@ -55,22 +57,12 @@ export const autoSeedSuperAdmin = async () => {
         status: "Success",
       });
 
-      console.log("✅ Super Admin seeded successfully:");
-      console.log("   Username : admin");
-      console.log("   Email    : admin@gnxt.com");
-      console.log("   Password : gnxt@admin@123");
+      console.log("✅ Initial Super Admin seeded successfully (Username: admin, Email: admin@gnxt.com).");
     } else {
-      console.log("ℹ️  Super Admin user exists. Syncing credentials to admin@gnxt.com / gnxt@admin@123...");
-      superAdmin.email = "admin@gnxt.com";
-      superAdmin.password = "gnxt@admin@123"; // Will be hashed by pre-save hook on save
-      superAdmin.role = "Super Admin";
-      superAdmin.status = "Active";
-      superAdmin.permissions = fullAccess;
-      
-      await superAdmin.save();
-      console.log("✅ Super Admin credentials updated and synced successfully in DB.");
+      // Super Admin exists — preserve existing credentials and permissions completely
+      console.log("✅ Super Admin verified.");
     }
   } catch (error) {
-    console.error("❌ Auto-seeding Super Admin failed:", error.message);
+    console.error("❌ Auto-seeding Super Admin notice:", error.message);
   }
 };

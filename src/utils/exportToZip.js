@@ -188,31 +188,19 @@ export async function streamExcelExport(opts) {
   console.log(`[ExcelExport] Embedded image count: ${imageCount}`);
   console.log(`[ExcelExport] Hyperlink count: ${hyperlinkCount}`);
 
-  const buffer = await workbook.xlsx.writeBuffer();
-  const bufferBytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-
-  const tmpXlsx = path.join(os.tmpdir(), `gnxt-xlsx-${Date.now()}-${Math.random().toString(36).substring(7)}.xlsx`);
-  fs.writeFileSync(tmpXlsx, bufferBytes);
-
-  const fileSize = bufferBytes.length;
-  console.log(`[ExcelExport] File size: ${(fileSize / 1024).toFixed(1)} KB`);
-  console.log(`[ExcelExport] Export completed: ${filename}`);
-
   try {
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.setHeader("Content-Length", fileSize);
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
 
-    await new Promise((resolve, reject) => {
-      const readStream = fs.createReadStream(tmpXlsx);
-      readStream.on("error", reject);
-      res.on("error", reject);
-      res.on("finish", resolve);
-      readStream.pipe(res);
-    });
-  } finally {
-    try { fs.unlinkSync(tmpXlsx); } catch {}
+    await workbook.xlsx.write(res);
+    res.end();
+    console.log(`[ExcelExport] Export completed and streamed: ${filename}`);
+  } catch (streamErr) {
+    console.error(`[ExcelExport] Streaming error for ${filename}:`, streamErr);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: "Export streaming failed", error: streamErr.message });
+    }
   }
 }
 

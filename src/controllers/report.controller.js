@@ -3,6 +3,9 @@ import Vehicle from "../models/Vehicle.js";
 import Driver from "../models/Driver.js";
 import Expense from "../models/expense.model.js";
 import Invoice from "../models/invoice.model.js";
+import NodeCache from "node-cache";
+
+const reportCache = new NodeCache({ stdTTL: 600 }); // 10 minutes cache
 
 /**
  * GET /api/reports/stats
@@ -10,7 +13,15 @@ import Invoice from "../models/invoice.model.js";
  */
 export const getShipmentStats = async (req, res) => {
   try {
-    const { dateRange, vehicle, driver, dealer, groupBy = "day", startDate: customStart, endDate: customEnd, fromDate, toDate, dateFrom, dateTo } = req.query;
+    const {
+      dateRange, vehicle, driver, dealer, groupBy = "day",
+      startDate: customStart, endDate: customEnd,
+      fromDate, toDate, dateFrom, dateTo,
+      // Ledger-specific filters
+      ledgerVehicle, ledgerDriver, ledgerDealer,
+      lrNo, plantNo, pod, status,
+      dispatchedDateFrom, dispatchedDateTo,
+    } = req.query;
 
     const query = {};
     const invoiceQuery = {};
@@ -138,7 +149,6 @@ export const getShipmentStats = async (req, res) => {
     const completedInvoicesCount = completedInvoices.length;
 
     // ── Fetch Historical Completed Data for Detailed Reports ─────────────
-    // Apply date range limitations as well as vehicle, driver, and dealer filters
     const historicalQuery = {};
     if (startDate && endDate) {
       historicalQuery.createdAt = { $gte: startDate, $lte: endDate };
@@ -146,14 +156,25 @@ export const getShipmentStats = async (req, res) => {
       historicalQuery.createdAt = { $gte: startDate };
     }
 
-    if (vehicle && vehicle !== "all") {
-      historicalQuery.vehicleNumber = vehicle;
+    if (vehicle && vehicle !== "all") historicalQuery.vehicleNumber = vehicle;
+    if (driver && driver !== "all") historicalQuery.driverName = driver;
+    if (dealer && dealer !== "all") historicalQuery["destinations.customerName"] = dealer;
+
+    // LR number filter
+    if (lrNo && lrNo.trim()) {
+      historicalQuery["destinations.lrNumber"] = { $regex: lrNo.trim(), $options: "i" };
     }
-    if (driver && driver !== "all") {
-      historicalQuery.driverName = driver;
+    // Plant number filter
+    if (plantNo && plantNo.trim()) {
+      historicalQuery["destinations.plantReferenceNumber"] = { $regex: plantNo.trim(), $options: "i" };
     }
-    if (dealer && dealer !== "all") {
-      historicalQuery["destinations.customerName"] = dealer;
+    // Dispatched date range filter (on shipment dispatchDate)
+    if (dispatchedDateFrom || dispatchedDateTo) {
+      const dFrom = dispatchedDateFrom ? new Date(dispatchedDateFrom) : new Date(0);
+      const dTo = dispatchedDateTo ? new Date(dispatchedDateTo) : new Date();
+      dFrom.setHours(0, 0, 0, 0);
+      dTo.setHours(23, 59, 59, 999);
+      historicalQuery.dispatchDate = { $gte: dFrom, $lte: dTo };
     }
 
     // Populate destinations.invoiceIds to aggregate invoice details within LR records
@@ -264,55 +285,297 @@ export const getShipmentStats = async (req, res) => {
       perf.totalExpenses += s.totalExpenses || 0;
     });
 
-    // ── Completed Invoices Historical Ledger Redesign (LR-Centered Grouping) ──
-    const ledgerRecords = [];
-    historicalShipments.forEach((s) => {
-      (s.destinations || []).forEach((dest) => {
-        // Apply customer/dealer filter if selected
-        if (dealer && dealer !== "all" && dest.customerName !== dealer) return;
+    // ── Completed Invoices Historical Ledger (Comprehensive LR & Invoice Records) ──
+    // Effective filters for ledger: dedicated ledger filters take precedence over global filters
+    const effVehicle = (ledgerVehicle && ledgerVehicle !== "all") ? ledgerVehicle : (vehicle && vehicle !== "all" ? vehicle : null);
+    const effDriver = (ledgerDriver && ledgerDriver !== "all") ? ledgerDriver : (driver && driver !== "all" ? driver : null);
+    const effDealer = (ledgerDealer && ledgerDealer !== "all") ? ledgerDealer : (dealer && dealer !== "all" ? dealer : null);
 
-        const hasPod = !!(dest.podImages?.length > 0 || dest.podReceiverName || dest.podRemarks);
-        const deliveryCompleteDate = s.deliveryDate || dest.updatedAt || s.updatedAt || s.createdAt;
+    // Fetch all shipments with populated invoices to build cross-references
+    const allShipments = await Shipment.find().populate("destinations.invoiceIds").lean();
+    const allDbInvoices = await Invoice.find().sort({ invoiceDate: -1, createdAt: -1 }).lean();
 
-        // Resolve associated invoices by checking dest.invoiceIds (populated from DB)
-        const resolvedInvoicesMap = new Map();
+    const invoiceToShipmentMap = new Map();
+    const plantToShipmentMap = new Map();
+    const invoiceNumToShipmentMap = new Map();
 
-        (dest.invoiceIds || []).forEach((inv) => {
-          if (inv && inv.invoiceNumber) {
-            resolvedInvoicesMap.set(inv.invoiceNumber, {
-              _id: inv._id,
-              invoiceNumber: inv.invoiceNumber,
-              invoiceDate: inv.invoiceDate,
-              plantReferenceNumber: inv.plantReferenceNumber,
-              customerName: inv.customerName,
-              location: inv.location,
-              status: inv.status,
-            });
+    allShipments.forEach((s) => {
+      (s.destinations || []).forEach((d) => {
+        (d.invoiceIds || []).forEach((invItem) => {
+          const idStr = invItem?._id ? invItem._id.toString() : (invItem ? invItem.toString() : null);
+          if (idStr) {
+            invoiceToShipmentMap.set(idStr, { shipment: s, destination: d, invoiceData: typeof invItem === "object" ? invItem : null });
           }
         });
 
-        const invoicesList = Array.from(resolvedInvoicesMap.values());
+        // Split comma-separated plant numbers so each plant can match individually
+        if (d.plantReferenceNumber) {
+          const pList = d.plantReferenceNumber.split(",").map((p) => p.trim()).filter(Boolean);
+          pList.forEach((pRef) => {
+            plantToShipmentMap.set(pRef, { shipment: s, destination: d });
+          });
+        }
 
-        ledgerRecords.push({
-          _id: dest._id || `${dest.lrNumber}-${dest.plantReferenceNumber}`,
-          lrNumber: dest.lrNumber || "",
-          customerName: dest.customerName || "",
-          location: dest.deliveryLocation || "",
-          plantReferenceNumber: dest.plantReferenceNumber || "",
-          status: dest.status || "",
-          deliveryCompleteDate,
-          dispatchDate: s.dispatchDate || s.createdAt,
-          podSubmitted: hasPod ? "Yes" : "No",
-          podReceiverName: dest.podReceiverName || "",
-          podRemarks: dest.podRemarks || "",
-          podImages: dest.podImages || [],
-          invoices: invoicesList,
+        (d.invoiceNumbers || []).forEach((num) => {
+          if (num) {
+            invoiceNumToShipmentMap.set(num.trim(), { shipment: s, destination: d });
+          }
         });
       });
     });
 
-    // Sort LR ledger records in ascending order based on Plant Reference Number
-    ledgerRecords.sort((a, b) => (a.plantReferenceNumber || "").localeCompare(b.plantReferenceNumber || "", undefined, { numeric: true, sensitivity: "base" }));
+    // Build unified ledger records from all invoices
+    const allLedgerRows = allDbInvoices.map((inv) => {
+      const match = invoiceToShipmentMap.get(inv._id.toString()) ||
+        plantToShipmentMap.get(inv.plantReferenceNumber) ||
+        invoiceNumToShipmentMap.get(inv.invoiceNumber);
+
+      const s = match?.shipment;
+      const d = match?.destination;
+
+      // Status mapping: AWAITING SHIPMENT, DESPATCHED, DELIVERED, CANCELLED
+      let rowStatus = "AWAITING SHIPMENT";
+      if (inv.status === "Cancelled" || s?.status === "Cancelled") {
+        rowStatus = "CANCELLED";
+      } else if (
+        inv.status === "Delivered" ||
+        d?.status === "Delivered" ||
+        d?.status === "Closed" ||
+        s?.status === "Delivered" ||
+        s?.status === "Closed"
+      ) {
+        rowStatus = "DELIVERED";
+      } else if (inv.status === "In Transit" || s?.status === "In Transit") {
+        rowStatus = "DESPATCHED";
+      } else {
+        rowStatus = "AWAITING SHIPMENT";
+      }
+
+      // POD status: "NOT GENERATED", "PENDING", "UPLOADED"
+      const hasPod = !!(d?.podImages?.length > 0 || d?.podReceiverName || d?.podRemarks || s?.podImages?.length > 0);
+      let podDisplay = "NOT GENERATED";
+      if (rowStatus === "DELIVERED" || rowStatus === "DESPATCHED") {
+        podDisplay = hasPod ? "UPLOADED" : "PENDING";
+      } else {
+        podDisplay = "NOT GENERATED";
+      }
+
+      // Check plantData on destination if present
+      const pData = (d?.plantData && inv.plantReferenceNumber && d.plantData[inv.plantReferenceNumber]) || null;
+
+      const invTyre = Number(inv.tyre) || 0;
+      const invTube = Number(inv.tube) || 0;
+      const invFlap = Number(inv.flap) || 0;
+
+      const pDataTyre = Number(pData?.totalTyres) || 0;
+      const pDataTube = Number(pData?.totalTubes) || 0;
+      const pDataFlap = Number(pData?.totalFlaps) || 0;
+
+      const destTyre = (d?.invoiceIds?.length <= 1) ? (Number(d?.totalTyres) || 0) : 0;
+      const destTube = (d?.invoiceIds?.length <= 1) ? (Number(d?.totalTubes) || 0) : 0;
+      const destFlap = (d?.invoiceIds?.length <= 1) ? (Number(d?.totalFlaps) || 0) : 0;
+
+      const tyreVal = invTyre > 0 ? invTyre : (pDataTyre > 0 ? pDataTyre : destTyre);
+      const tubeVal = invTube > 0 ? invTube : (pDataTube > 0 ? pDataTube : destTube);
+      const flapVal = invFlap > 0 ? invFlap : (pDataFlap > 0 ? pDataFlap : destFlap);
+
+      const weightVal = (Number(inv.weight) || 0) > 0
+        ? Number(inv.weight)
+        : (pData?.weightKg ? Number(pData.weightKg) : (Number(d?.weightKg) || 0));
+
+      return {
+        _id: inv._id,
+        plant: inv.plantReferenceNumber || "",
+        plantReferenceNumber: inv.plantReferenceNumber || "",
+        plantNumber: inv.plantReferenceNumber || "",
+        invoiceNo: inv.invoiceNumber || "",
+        invoiceNumber: inv.invoiceNumber || "",
+        invoiceDt: inv.invoiceDate || null,
+        invoiceDate: inv.invoiceDate || null,
+        customer: inv.customerName || d?.customerName || "",
+        customerName: inv.customerName || d?.customerName || "",
+        customerLocation: inv.location || d?.deliveryLocation || "",
+        location: inv.location || d?.deliveryLocation || "",
+        status: rowStatus,
+        shipmentStatus: s?.status || inv.status || "",
+        destStatus: d?.status || "",
+        tyre: tyreVal,
+        tube: tubeVal,
+        flap: flapVal,
+        totalWeight: weightVal,
+        weight: weightVal,
+        quantity: (inv.quantity || 0) > 0 ? inv.quantity : (tyreVal + tubeVal + flapVal),
+        lrNo: d?.lrNumber || "",
+        lrNumber: d?.lrNumber || "",
+        dispatchDate: s?.dispatchDate || null,
+        vehicleNumber: s?.vehicleNumber || "",
+        driverName: s?.driverName || "",
+        deliveryDate: s?.deliveryDate || inv.deliveredAt || null,
+        pod: podDisplay,
+        podSubmitted: hasPod ? "Yes" : "No",
+        podReceiverName: d?.podReceiverName || "",
+        podRemarks: d?.podRemarks || "",
+        podImages: d?.podImages || s?.podImages || [],
+        shipmentId: s?.shipmentId || "",
+        createdAt: inv.createdAt,
+      };
+    });
+
+    // Also include any shipment destinations that may not have direct Invoice document records
+    const knownInvIds = new Set(allDbInvoices.map((i) => i._id.toString()));
+    const knownInvNumbers = new Set(allDbInvoices.map((i) => i.invoiceNumber).filter(Boolean));
+    const knownPlants = new Set(allDbInvoices.map((i) => i.plantReferenceNumber).filter(Boolean));
+
+    allShipments.forEach((s) => {
+      (s.destinations || []).forEach((d) => {
+        const pList = (d.plantReferenceNumber || "").split(",").map((p) => p.trim()).filter(Boolean);
+        const hasExistingPlant = pList.some((p) => knownPlants.has(p));
+        const hasExistingInvoiceNum = (d.invoiceNumbers || []).some((num) => knownInvNumbers.has(num));
+        const hasExistingInvoiceId = (d.invoiceIds || []).some((id) => {
+          const idStr = id?._id ? id._id.toString() : (id ? id.toString() : null);
+          return idStr && knownInvIds.has(idStr);
+        });
+
+        if (!hasExistingPlant && !hasExistingInvoiceNum && !hasExistingInvoiceId && d.plantReferenceNumber) {
+          const hasPod = !!(d.podImages?.length > 0 || d.podReceiverName || d.podRemarks || s.podImages?.length > 0);
+          let rowStatus = "AWAITING SHIPMENT";
+          if (s.status === "Cancelled") rowStatus = "CANCELLED";
+          else if (s.status === "Delivered" || s.status === "Closed" || d.status === "Delivered" || d.status === "Closed") rowStatus = "DELIVERED";
+          else if (s.status === "In Transit") rowStatus = "DESPATCHED";
+
+          allLedgerRows.push({
+            _id: d._id || `${s.shipmentId}-${d.plantReferenceNumber}`,
+            plant: d.plantReferenceNumber,
+            plantReferenceNumber: d.plantReferenceNumber,
+            plantNumber: d.plantReferenceNumber,
+            invoiceNo: (d.invoiceNumbers && d.invoiceNumbers[0]) || "—",
+            invoiceNumber: (d.invoiceNumbers && d.invoiceNumbers[0]) || "—",
+            invoiceDt: null,
+            invoiceDate: null,
+            customer: d.customerName || "",
+            customerName: d.customerName || "",
+            customerLocation: d.deliveryLocation || "",
+            location: d.deliveryLocation || "",
+            status: rowStatus,
+            shipmentStatus: s.status,
+            destStatus: d.status,
+            tyre: d.totalTyres || 0,
+            tube: d.totalTubes || 0,
+            flap: d.totalFlaps || 0,
+            totalWeight: d.weightKg || 0,
+            weight: d.weightKg || 0,
+            quantity: d.totalQuantity || 0,
+            lrNo: d.lrNumber || "",
+            lrNumber: d.lrNumber || "",
+            dispatchDate: s.dispatchDate || null,
+            vehicleNumber: s.vehicleNumber || "",
+            driverName: s.driverName || "",
+            deliveryDate: s.deliveryDate || null,
+            pod: (rowStatus === "DELIVERED" || rowStatus === "DESPATCHED") ? (hasPod ? "UPLOADED" : "PENDING") : "NOT GENERATED",
+            podSubmitted: hasPod ? "Yes" : "No",
+            podReceiverName: d.podReceiverName || "",
+            podRemarks: d.podRemarks || "",
+            podImages: d.podImages || s.podImages || [],
+            shipmentId: s.shipmentId || "",
+            createdAt: s.createdAt,
+          });
+        }
+      });
+    });
+
+    // ── Apply All Ledger Filters ───────────────────────────
+    let filteredLedger = allLedgerRows;
+
+    // Date range filter (custom from/to or predefined range)
+    if (startDate && endDate) {
+      filteredLedger = filteredLedger.filter((r) => {
+        const invD = r.invoiceDate ? new Date(r.invoiceDate) : null;
+        const dispD = r.dispatchDate ? new Date(r.dispatchDate) : null;
+        const crtD = r.createdAt ? new Date(r.createdAt) : null;
+        return (invD && invD >= startDate && invD <= endDate) ||
+               (dispD && dispD >= startDate && dispD <= endDate) ||
+               (crtD && crtD >= startDate && crtD <= endDate);
+      });
+    } else if (startDate) {
+      filteredLedger = filteredLedger.filter((r) => {
+        const invD = r.invoiceDate ? new Date(r.invoiceDate) : null;
+        const dispD = r.dispatchDate ? new Date(r.dispatchDate) : null;
+        const crtD = r.createdAt ? new Date(r.createdAt) : null;
+        return (invD && invD >= startDate) ||
+               (dispD && dispD >= startDate) ||
+               (crtD && crtD >= startDate);
+      });
+    }
+
+    // Vehicle filter (date range + vehicle)
+    if (effVehicle) {
+      filteredLedger = filteredLedger.filter((r) => r.vehicleNumber === effVehicle);
+    }
+
+    // Driver filter (date range + driver)
+    if (effDriver) {
+      filteredLedger = filteredLedger.filter((r) => r.driverName === effDriver);
+    }
+
+    // Dealer filter (date range + dealer)
+    if (effDealer) {
+      const dLower = effDealer.toLowerCase();
+      filteredLedger = filteredLedger.filter((r) =>
+        (r.customer && r.customer.toLowerCase() === dLower) ||
+        (r.customerName && r.customerName.toLowerCase() === dLower)
+      );
+    }
+
+    // LR No filter
+    if (lrNo && lrNo.trim()) {
+      const lrQuery = lrNo.trim().toLowerCase();
+      filteredLedger = filteredLedger.filter((r) => (r.lrNo || "").toLowerCase().includes(lrQuery));
+    }
+
+    // Plant No filter
+    if (plantNo && plantNo !== "all" && plantNo.trim()) {
+      const plantQuery = plantNo.trim().toLowerCase();
+      filteredLedger = filteredLedger.filter((r) => (r.plant || "").toLowerCase().includes(plantQuery));
+    }
+
+    // Status filter (AWAITING SHIPMENT, DESPATCHED, DELIVERED, CANCELLED)
+    if (status && status !== "all") {
+      const normStatus = status.trim().toUpperCase().replace(/_/g, " ");
+      filteredLedger = filteredLedger.filter((r) => r.status === normStatus);
+    }
+
+    // POD filter (NOT GENERATED, PENDING, UPLOADED)
+    if (pod && pod !== "all") {
+      const normPod = pod.trim().toUpperCase().replace(/_/g, " ");
+      filteredLedger = filteredLedger.filter((r) => r.pod === normPod);
+    }
+
+    // Dispatched date range filter
+    if (dispatchedDateFrom || dispatchedDateTo) {
+      const dFrom = dispatchedDateFrom ? new Date(dispatchedDateFrom) : new Date(0);
+      const dTo = dispatchedDateTo ? new Date(dispatchedDateTo) : new Date();
+      dFrom.setHours(0, 0, 0, 0);
+      dTo.setHours(23, 59, 59, 999);
+      filteredLedger = filteredLedger.filter((r) => {
+        if (!r.dispatchDate) return false;
+        const dDate = new Date(r.dispatchDate);
+        return dDate >= dFrom && dDate <= dTo;
+      });
+    }
+
+    // ── Status counts for ledger summary ────────────────────
+    const statusCounts = {
+      total: filteredLedger.length,
+      awaitingShipment: filteredLedger.filter((r) => r.status === "AWAITING SHIPMENT").length,
+      despatched: filteredLedger.filter((r) => r.status === "DESPATCHED").length,
+      delivered: filteredLedger.filter((r) => r.status === "DELIVERED").length,
+      cancelled: filteredLedger.filter((r) => r.status === "CANCELLED").length,
+    };
+
+    // Sort by Plant Reference Number
+    filteredLedger.sort((a, b) =>
+      String(a.plant || "").localeCompare(String(b.plant || ""), undefined, { numeric: true, sensitivity: "base" })
+    );
 
     // ── Build Timeline Aggregation Trend ──────────────
     let rangeStart = startDate;
@@ -389,7 +652,8 @@ export const getShipmentStats = async (req, res) => {
           completedInvoices: completedInvoicesCount,
         },
         shipments: completedHistoricalShipments,
-        invoices: ledgerRecords,
+        invoices: filteredLedger,
+        invoiceStatusCounts: statusCounts,
         fleet: {
           drivers: Array.from(driverPerformanceMap.values()).sort((a, b) => b.completedTrips - a.completedTrips),
           vehicles: Array.from(vehiclePerformanceMap.values()).sort((a, b) => b.completedTrips - a.completedTrips),
@@ -404,24 +668,44 @@ export const getShipmentStats = async (req, res) => {
 
 /**
  * GET /api/reports/filters
- * Fetches unique values for filter dropdowns.
+ * Fetches unique values for filter dropdowns across shipments and invoices.
  */
 export const getFilterOptions = async (req, res) => {
   try {
-    const [vehicles, drivers, dealers] = await Promise.all([
+    const cacheKey = "report_filter_options_v3";
+    const cached = reportCache.get(cacheKey);
+    if (cached) {
+      return res.status(200).json({ success: true, data: cached });
+    }
+
+    const [
+      shipmentVehicles,
+      shipmentDrivers,
+      shipmentDealers,
+      invoiceDealers,
+      shipmentLRs,
+      shipmentPlants,
+      invoicePlants,
+    ] = await Promise.all([
       Shipment.distinct("vehicleNumber"),
       Shipment.distinct("driverName"),
       Shipment.distinct("destinations.customerName"),
+      Invoice.distinct("customerName"),
+      Shipment.distinct("destinations.lrNumber"),
+      Shipment.distinct("destinations.plantReferenceNumber"),
+      Invoice.distinct("plantReferenceNumber"),
     ]);
 
-    res.status(200).json({
-      success: true,
-      data: {
-        vehicles: vehicles.sort(),
-        drivers: drivers.sort(),
-        dealers: dealers.sort(),
-      },
-    });
+    const data = {
+      vehicles: shipmentVehicles.filter(Boolean).sort(),
+      drivers: shipmentDrivers.filter(Boolean).sort(),
+      dealers: Array.from(new Set([...shipmentDealers, ...invoiceDealers])).filter(Boolean).sort(),
+      lrNumbers: shipmentLRs.filter(Boolean).sort(),
+      plantNumbers: Array.from(new Set([...shipmentPlants, ...invoicePlants])).filter(Boolean).sort(),
+    };
+
+    reportCache.set(cacheKey, data);
+    res.status(200).json({ success: true, data });
   } catch (err) {
     res.status(500).json({ success: false, message: "Error fetching filters", error: err.message });
   }

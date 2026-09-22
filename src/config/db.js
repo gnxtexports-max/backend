@@ -9,147 +9,86 @@ dns.setServers(["8.8.8.8", "8.8.4.4", "1.1.1.1"]);
 process.on("unhandledRejection", (reason) => {
   const msg = reason?.message || "";
   if (msg.includes("Mongo") || msg.includes("mongo") || msg.includes("topology")) {
-    console.warn("⚠️ Caught unhandled MongoDB rejection — server continues in offline mode.");
+    console.warn("⚠️ Caught unhandled MongoDB rejection — server continues operating.");
     return;
   }
   console.error("Unhandled Rejection:", reason);
 });
 
-const FALLBACK_ATLAS_URI = "mongodb+srv://gnxt_admin:gnxt%40123@cluster0.zkzxzxo.mongodb.net/gnxt?retryWrites=true&w=majority&appName=Cluster0";
+// Connection pool options
+const connectionOptions = {
+  maxPoolSize: 50,
+  minPoolSize: 10,
+  maxIdleTimeMS: 30000,
+  serverSelectionTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+  connectTimeoutMS: 10000,
+  family: 4,
+};
+
+// Asynchronous index verification — runs after connection is established
+const createIndexesInBg = async () => {
+  try {
+    const db = mongoose.connection.db;
+    if (!db) return;
+
+    await Promise.all([
+      db.collection("invoices").createIndex({ status: 1, invoiceDate: -1, plantReferenceNumber: -1 }),
+      db.collection("invoices").createIndex({ plantReferenceNumber: 1, status: 1 }),
+      db.collection("shipments").createIndex({ status: 1, createdAt: -1 }),
+      db.collection("shipments").createIndex({ "destinations.lrNumber": 1 }),
+      db.collection("shipments").createIndex({ "destinations.invoiceIds": 1 }),
+      db.collection("shipments").createIndex({ vehicleId: 1, status: 1, dispatchDate: -1 }),
+      db.collection("shipments").createIndex({ driverId: 1, status: 1 }),
+      db.collection("expenses").createIndex({ category: 1, date: -1 }),
+      db.collection("expenses").createIndex({ vehicleNo: 1, date: -1 }),
+      db.collection("vehiclelocations").createIndex({ vehicleStatus: 1, fixTime: 1 }),
+      db.collection("activitylogs").createIndex({ userId: 1, action: 1, status: 1, createdAt: -1 }),
+      db.collection("drivers").createIndex({ phone: 1 }, { unique: true, sparse: true }),
+      db.collection("drivers").createIndex({ licenseNumber: 1 }, { unique: true, sparse: true }),
+    ]);
+    console.log("✅ [Indexes] Production database indexes verified successfully.");
+  } catch (idxError) {
+    console.warn("⚠️ [Indexes] Background index notice:", idxError.message);
+  }
+};
 
 const connectDB = async () => {
   try {
-    // Suppress MongoDB error events to prevent process crashes
-    mongoose.connection.on("error", (err) => {
-      console.warn("⚠️ MongoDB connection error suppressed:", err.message.substring(0, 100));
+    // Suppress MongoDB error events to prevent process crashes & add reconnect logging
+    if (!mongoose.connection.listeners("error").length) {
+      mongoose.connection.on("error", (err) => {
+        console.warn("⚠️ MongoDB connection error suppressed:", err.message.substring(0, 100));
+      });
+
+      mongoose.connection.on("disconnected", () => {
+        console.warn("⚠️ MongoDB connection lost. Mongoose will attempt automatic reconnection...");
+      });
+
+      mongoose.connection.on("reconnected", () => {
+        console.log("✅ MongoDB reconnected successfully!");
+      });
+    }
+
+    const targetUri = process.env.MONGODB_URI;
+    if (!targetUri) {
+      throw new Error("MONGODB_URI environment variable is required. Server cannot start without database configuration.");
+    }
+
+    await mongoose.connect(targetUri, connectionOptions);
+    console.log("✅ MongoDB Connected:", targetUri.includes("mongodb+srv") ? "MongoDB Atlas Cloud" : "Local MongoDB Instance");
+
+    // Seed superadmin (idempotent, only creates if absent)
+    autoSeedSuperAdmin().catch((err) => console.warn("Auto-seed notice:", err.message));
+
+    // Run index creation asynchronously in background without blocking server boot
+    setImmediate(() => {
+      createIndexesInBg();
     });
 
-    const targetUri = process.env.MONGODB_URI || FALLBACK_ATLAS_URI;
-    try {
-      await mongoose.connect(targetUri, {
-        serverSelectionTimeoutMS: 10000,
-      });
-      console.log("MongoDB Connected:", targetUri.includes("mongodb+srv") ? "MongoDB Atlas Cloud" : targetUri);
-    } catch (primaryErr) {
-      if (targetUri !== FALLBACK_ATLAS_URI && (primaryErr.message.includes("ECONNREFUSED") || primaryErr.message.includes("127.0.0.1") || primaryErr.message.includes("localhost"))) {
-        console.warn("⚠️ Local MongoDB connection refused (ECONNREFUSED). Falling back to MongoDB Atlas Cloud...");
-        await mongoose.connect(FALLBACK_ATLAS_URI, {
-          serverSelectionTimeoutMS: 10000,
-        });
-        console.log("MongoDB Connected to MongoDB Atlas Cloud (Fallback)");
-      } else {
-        throw primaryErr;
-      }
-    }
-    await autoSeedSuperAdmin();
-
-    // Run self-healing migration for glap -> flap, totalGlaps -> totalFlaps, and sync shipment totals with invoices
-    try {
-      const db = mongoose.connection.db;
-      
-      // 1. Invoices: Copy glap value to flap if glap exists and flap is missing or default 0
-      const invRes = await db.collection("invoices").updateMany(
-        { glap: { $exists: true }, flap: { $in: [null, 0] } },
-        [{ $set: { flap: "$glap" } }]
-      );
-      if (invRes.modifiedCount > 0) {
-        console.log(`[Migration] Migrated ${invRes.modifiedCount} invoices (copied glap to flap)`);
-      }
-
-      // 2. Shipments: Copy totalGlaps to totalFlaps in destinations array
-      const shipmentsToFix = await db.collection("shipments").find({ "destinations.totalGlaps": { $exists: true } }).toArray();
-      let shipmentUpdateCount = 0;
-      for (const s of shipmentsToFix) {
-        let modified = false;
-        const updatedDestinations = s.destinations.map(d => {
-          if (d.totalGlaps !== undefined && d.totalFlaps === undefined) {
-            d.totalFlaps = d.totalGlaps;
-            modified = true;
-          }
-          return d;
-        });
-        if (modified) {
-          await db.collection("shipments").updateOne(
-            { _id: s._id },
-            { $set: { destinations: updatedDestinations } }
-          );
-          shipmentUpdateCount++;
-        }
-      }
-      if (shipmentUpdateCount > 0) {
-        console.log(`[Migration] Migrated ${shipmentUpdateCount} shipments (copied totalGlaps to totalFlaps)`);
-      }
-
-      // 3. Shipments: Sync all shipment destination totals with their linked invoices
-      const allShipments = await db.collection("shipments").find({}).toArray();
-      let shipmentSyncCount = 0;
-      for (const s of allShipments) {
-        let modified = false;
-        const updatedDestinations = await Promise.all((s.destinations || []).map(async (d) => {
-          if (d.invoiceIds && d.invoiceIds.length > 0) {
-            const invoices = await db.collection("invoices").find({ _id: { $in: d.invoiceIds } }).toArray();
-            if (invoices.length > 0) {
-              const totalWeight = invoices.reduce((sum, inv) => sum + (Number(inv.weight) || 0), 0);
-              const totalTyres = invoices.reduce((sum, inv) => sum + (Number(inv.tyre) || 0), 0);
-              const totalTubes = invoices.reduce((sum, inv) => sum + (Number(inv.tube) || 0), 0);
-              const totalFlaps = invoices.reduce((sum, inv) => sum + (Number(inv.flap) || 0), 0);
-              const totalQuantity = totalTyres + totalTubes + totalFlaps;
-
-              // Check if any value is different
-              const weightDiff = Math.abs((d.weightKg || 0) - totalWeight) > 0.001;
-              const tyresDiff = (d.totalTyres || 0) !== totalTyres;
-              const tubesDiff = (d.totalTubes || 0) !== totalTubes;
-              const flapsDiff = (d.totalFlaps || 0) !== totalFlaps;
-              const qtyDiff = (d.totalQuantity || 0) !== totalQuantity;
-
-              if (weightDiff || tyresDiff || tubesDiff || flapsDiff || qtyDiff) {
-                d.weightKg = parseFloat(totalWeight.toFixed(2));
-                d.totalTyres = totalTyres;
-                d.totalTubes = totalTubes;
-                d.totalFlaps = totalFlaps;
-                d.totalQuantity = totalQuantity;
-                modified = true;
-              }
-            }
-          }
-          return d;
-        }));
-
-        if (modified) {
-          const totalWeightKg = updatedDestinations.reduce((sum, d) => sum + (Number(d.weightKg) || 0), 0);
-          const totalQuantity = updatedDestinations.reduce((sum, d) => sum + (Number(d.totalQuantity) || 0), 0);
-
-          await db.collection("shipments").updateOne(
-            { _id: s._id },
-            { 
-              $set: { 
-                destinations: updatedDestinations,
-                totalWeightKg: parseFloat(totalWeightKg.toFixed(2)),
-                totalQuantity: totalQuantity
-              } 
-            }
-          );
-          shipmentSyncCount++;
-        }
-      }
-      if (shipmentSyncCount > 0) {
-        console.log(`[Migration] Synced ${shipmentSyncCount} shipments with their correct invoice totals`);
-      }
-
-      // 4. Invoices: Rename status "Returned - Awaiting" to "Reassignment"
-      const statusRes = await db.collection("invoices").updateMany(
-        { status: "Returned - Awaiting" },
-        { $set: { status: "Reassignment" } }
-      );
-      if (statusRes.modifiedCount > 0) {
-        console.log(`[Migration] Migrated ${statusRes.modifiedCount} invoices (status 'Returned - Awaiting' -> 'Reassignment')`);
-      }
-    } catch (migError) {
-      console.warn("⚠️ [Migration] Failed to run database auto-migration:", migError.message);
-    }
   } catch (error) {
-    console.error("DB Error:", error.message);
-    console.warn("⚠️ Database connection failed. Running server in static/offline mode.");
+    console.error("❌ DB Connection Error:", error.message);
+    throw error;
   }
 };
 

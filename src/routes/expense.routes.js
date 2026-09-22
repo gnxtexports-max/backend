@@ -13,10 +13,10 @@ import { authenticate, requirePermission, requireSuperAdmin } from "../middlewar
 
 const router = express.Router();
 
-// Public media endpoint for expense receipts
-router.get("/:id/receipt", getExpenseReceipt);
-
 router.use(authenticate);
+
+// Protected media endpoint for expense receipts
+router.get("/:id/receipt", requirePermission("Expenses", "view"), getExpenseReceipt);
 
 router.get("/summary", requirePermission("Expenses", "view"), getExpenseSummary);   // must be before /:id
 router.get("/export", requirePermission("Expenses", "view"), exportExpenses);       // must be before /:id

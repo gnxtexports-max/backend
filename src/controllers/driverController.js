@@ -6,7 +6,10 @@ import { syncDriverStatuses } from "../utils/syncStatuses.js";
 export const getDrivers = async (req, res) => {
   try {
     await syncDriverStatuses();
-    const drivers = await Driver.find().sort({ createdAt: -1 });
+    const drivers = await Driver.find()
+      .select("name phone age licenseNumber driverType tripStatus assignedVehicle status performance rating documents")
+      .sort({ createdAt: -1 })
+      .lean();
     res.json(drivers);
   } catch (error) {
     res.status(500).json({ message: "Error fetching drivers", error: error.message });
@@ -33,38 +36,47 @@ export const createDriver = async (req, res) => {
   try {
     const { name, age, phone, licenseNumber, driverType, tripStatus } = req.body;
 
-    // Validation
-    if (!name || !age || !phone || !licenseNumber || !driverType) {
-      return res.status(400).json({ message: "All required fields must be provided" });
+    if (!name || !driverType) {
+      return res.status(400).json({ message: "Driver name and driver type are required" });
     }
 
+    const trimmedPhone = phone && phone.trim() ? phone.trim() : undefined;
+    const trimmedLicense = licenseNumber && licenseNumber.trim() ? licenseNumber.trim() : undefined;
+    const numericAge = age !== "" && age !== null && age !== undefined ? Number(age) : undefined;
+
     // Check if phone already exists
-    const existingPhone = await Driver.findOne({ phone });
-    if (existingPhone) {
-      return res.status(400).json({ message: "Phone number already registered" });
+    if (trimmedPhone) {
+      const existingPhone = await Driver.findOne({ phone: trimmedPhone });
+      if (existingPhone) {
+        return res.status(400).json({ message: "Phone number already registered" });
+      }
     }
 
     // Check if license already exists
-    const existingLicense = await Driver.findOne({ licenseNumber });
-    if (existingLicense) {
-      return res.status(400).json({ message: "License number already registered" });
+    if (trimmedLicense) {
+      const existingLicense = await Driver.findOne({ licenseNumber: trimmedLicense });
+      if (existingLicense) {
+        return res.status(400).json({ message: "License number already registered" });
+      }
     }
 
-    const newDriver = new Driver({
-      name,
-      age,
-      phone,
-      licenseNumber,
+    const driverPayload = {
+      name: name.trim(),
       driverType,
       tripStatus: tripStatus || "Idle",
-    });
+    };
+    if (numericAge !== undefined && !isNaN(numericAge)) driverPayload.age = numericAge;
+    if (trimmedPhone) driverPayload.phone = trimmedPhone;
+    if (trimmedLicense) driverPayload.licenseNumber = trimmedLicense;
+
+    const newDriver = new Driver(driverPayload);
 
     await newDriver.save();
     if (req.io) req.io.emit("drivers:changed");
     res.status(201).json(newDriver);
   } catch (error) {
     if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
+      const field = Object.keys(error.keyPattern || {})[0] || "Field";
       return res.status(400).json({ message: `${field} already exists` });
     }
     res.status(500).json({ message: "Error creating driver", error: error.message });
@@ -77,10 +89,14 @@ export const updateDriver = async (req, res) => {
     const { id } = req.params;
     const { name, age, phone, licenseNumber, driverType, tripStatus, assignedVehicle } = req.body;
 
+    const trimmedPhone = phone && phone.trim() ? phone.trim() : undefined;
+    const trimmedLicense = licenseNumber && licenseNumber.trim() ? licenseNumber.trim() : undefined;
+    const numericAge = age !== "" && age !== null && age !== undefined ? Number(age) : undefined;
+
     // Check if phone already exists for another driver
-    if (phone) {
+    if (trimmedPhone) {
       const existingPhone = await Driver.findOne({
-        phone,
+        phone: trimmedPhone,
         _id: { $ne: id },
       });
       if (existingPhone) {
@@ -89,9 +105,9 @@ export const updateDriver = async (req, res) => {
     }
 
     // Check if license already exists for another driver
-    if (licenseNumber) {
+    if (trimmedLicense) {
       const existingLicense = await Driver.findOne({
-        licenseNumber,
+        licenseNumber: trimmedLicense,
         _id: { $ne: id },
       });
       if (existingLicense) {
@@ -99,17 +115,41 @@ export const updateDriver = async (req, res) => {
       }
     }
 
-    const updatedDriver = await Driver.findByIdAndUpdate(
-      id,
-      {
-        name,
-        age,
-        phone,
-        licenseNumber,
+    const updateDoc = {
+      $set: {
+        name: name ? name.trim() : undefined,
         driverType,
         tripStatus,
-        assignedVehicle,
+        assignedVehicle: assignedVehicle || null,
       },
+      $unset: {},
+    };
+
+    if (numericAge !== undefined && !isNaN(numericAge)) {
+      updateDoc.$set.age = numericAge;
+    } else {
+      updateDoc.$unset.age = 1;
+    }
+
+    if (trimmedPhone) {
+      updateDoc.$set.phone = trimmedPhone;
+    } else {
+      updateDoc.$unset.phone = 1;
+    }
+
+    if (trimmedLicense) {
+      updateDoc.$set.licenseNumber = trimmedLicense;
+    } else {
+      updateDoc.$unset.licenseNumber = 1;
+    }
+
+    if (Object.keys(updateDoc.$unset).length === 0) {
+      delete updateDoc.$unset;
+    }
+
+    const updatedDriver = await Driver.findByIdAndUpdate(
+      id,
+      updateDoc,
       { new: true, runValidators: true }
     );
 
@@ -121,7 +161,7 @@ export const updateDriver = async (req, res) => {
     res.json(updatedDriver);
   } catch (error) {
     if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
+      const field = Object.keys(error.keyPattern || {})[0] || "Field";
       return res.status(400).json({ message: `${field} already exists` });
     }
     res.status(500).json({ message: "Error updating driver", error: error.message });
@@ -151,7 +191,7 @@ export const getDriversByType = async (req, res) => {
   try {
     const { type } = req.params;
 
-    const drivers = await Driver.find({ driverType: type }).sort({ createdAt: -1 });
+    const drivers = await Driver.find({ driverType: type }).sort({ createdAt: -1 }).lean();
 
     res.json(drivers);
   } catch (error) {
@@ -164,7 +204,7 @@ export const getDriversByStatus = async (req, res) => {
   try {
     const { status } = req.params;
 
-    const drivers = await Driver.find({ tripStatus: status }).sort({ createdAt: -1 });
+    const drivers = await Driver.find({ tripStatus: status }).sort({ createdAt: -1 }).lean();
 
     res.json(drivers);
   } catch (error) {
@@ -187,7 +227,7 @@ export const searchDrivers = async (req, res) => {
         { phone: { $regex: q, $options: "i" } },
         { licenseNumber: { $regex: q, $options: "i" } },
       ],
-    }).sort({ createdAt: -1 });
+    }).sort({ createdAt: -1 }).lean();
 
     res.json(drivers);
   } catch (error) {
