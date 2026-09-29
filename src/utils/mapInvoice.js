@@ -130,23 +130,37 @@ export const mapExcelRowToInvoice = (row, resolvedKeys) => {
   };
 
   const parseDDMMYYYY = (str) => {
-    const parts = str.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/);
+    if (!str) return null;
+    const cleanStr = String(str).trim();
+    // Handle dd.mm.yyyy / dd/mm/yyyy / dd-mm-yyyy (also allows 2-digit years or trailing time)
+    const parts = cleanStr.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/);
     if (parts) {
-      const [_, day, month, year] = parts;
+      let [_, day, month, year] = parts;
+      if (year.length === 2) {
+        year = Number(year) < 70 ? `20${year}` : `19${year}`;
+      }
+      return new Date(+year, +month - 1, +day);
+    }
+    // Handle yyyy-mm-dd / yyyy/mm/dd / yyyy.mm.dd
+    const isoParts = cleanStr.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})/);
+    if (isoParts) {
+      const [_, year, month, day] = isoParts;
       return new Date(+year, +month - 1, +day);
     }
     return null;
   };
 
   const normalizeDate = (excelDate) => {
+    if (excelDate === undefined || excelDate === null || excelDate === "") return null;
+
     // Excel serial number support
     if (typeof excelDate === "number") {
       const jsDate = new Date((excelDate - 25569) * 86400 * 1000);
       jsDate.setHours(0, 0, 0, 0);
-      return jsDate;
+      return isNaN(jsDate.getTime()) ? null : jsDate;
     }
 
-    // Handle dd.mm.yyyy / dd/mm/yyyy (client format)
+    // Handle string date formats
     if (typeof excelDate === "string") {
       const parsed = parseDDMMYYYY(excelDate);
       if (parsed) return parsed;

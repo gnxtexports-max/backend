@@ -2,6 +2,16 @@ import User from "../models/User.js";
 
 export const authenticate = async (req, res, next) => {
   try {
+    // Block direct address-bar browser navigation to raw API endpoints (prevent raw JSON/data exposure)
+    const secFetchDest = req.headers["sec-fetch-dest"];
+    const secFetchMode = req.headers["sec-fetch-mode"];
+    if (secFetchDest === "document" && secFetchMode === "navigate") {
+      return res.status(403).json({
+        success: false,
+        message: "Direct browser access to API endpoints is not permitted."
+      });
+    }
+
     const userId = req.session?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: "Not authenticated" });

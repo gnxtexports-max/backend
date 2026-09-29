@@ -6,10 +6,20 @@ import { mapExcelRowToInvoice, validateSheetColumns, resolveHeaderKeys } from ".
 
 const parseDate = (value) => {
   if (!value) return null;
-  // Handle dd.mm.yyyy / dd/mm/yyyy
-  const parts = String(value).match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/);
+  const cleanStr = String(value).trim();
+  // Handle dd.mm.yyyy / dd/mm/yyyy / dd-mm-yyyy (also allows 2-digit years or trailing time)
+  const parts = cleanStr.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/);
   if (parts) {
-    const [_, day, month, year] = parts;
+    let [_, day, month, year] = parts;
+    if (year.length === 2) {
+      year = Number(year) < 70 ? `20${year}` : `19${year}`;
+    }
+    return new Date(+year, +month - 1, +day);
+  }
+  // Handle yyyy-mm-dd / yyyy/mm/dd / yyyy.mm.dd
+  const isoParts = cleanStr.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})/);
+  if (isoParts) {
+    const [_, year, month, day] = isoParts;
     return new Date(+year, +month - 1, +day);
   }
   const d = new Date(value);
@@ -142,59 +152,69 @@ export const getInvoices = async (req, res) => {
     page = Number(page);
     limit = Number(limit);
 
-    const query = {};
+    const andClauses = [];
 
     // SEARCH
     if (search.trim()) {
-      query.$or = [
-        {
-          plantReferenceNumber: {
-            $regex: search,
-            $options: "i",
+      andClauses.push({
+        $or: [
+          {
+            plantReferenceNumber: {
+              $regex: search,
+              $options: "i",
+            },
           },
-        },
-        {
-          customerName: {
-            $regex: search,
-            $options: "i",
+          {
+            customerName: {
+              $regex: search,
+              $options: "i",
+            },
           },
-        },
-        {
-          invoiceNumber: {
-            $regex: search,
-            $options: "i",
+          {
+            invoiceNumber: {
+              $regex: search,
+              $options: "i",
+            },
           },
-        },
-      ];
+        ],
+      });
     }
 
     // STATUS FILTER
     if (status.trim()) {
-      query.status = status;
+      andClauses.push({ status });
     }
 
-    // DATE RANGE FILTER
+    // DATE RANGE FILTER (matches invoiceDate OR createdAt for today's posted data)
     const start = fromDate || dateFrom;
     const end = toDate || dateTo;
     if (start || end) {
-      query.invoiceDate = {};
+      const dateCond = {};
       if (start) {
         const s = new Date(start);
         s.setHours(0, 0, 0, 0);
-        query.invoiceDate.$gte = s;
+        dateCond.$gte = s;
       }
       if (end) {
         const e = new Date(end);
         e.setHours(23, 59, 59, 999);
-        query.invoiceDate.$lte = e;
+        dateCond.$lte = e;
       }
+      andClauses.push({
+        $or: [
+          { invoiceDate: dateCond },
+          { createdAt: dateCond },
+        ],
+      });
     }
 
-    // FETCH MATCHING RECORDS: Sort by invoiceDate descending, plantReferenceNumber descending
+    const query = andClauses.length > 0 ? { $and: andClauses } : {};
+
+    // FETCH MATCHING RECORDS: Sort by newest createdAt, invoiceDate, plantReferenceNumber
     const invoices = await Invoice.find(query).sort({
+      createdAt: -1,
       invoiceDate: -1,
       plantReferenceNumber: -1,
-      createdAt: -1
     }).lean();
 
     // GROUPING
@@ -247,17 +267,23 @@ export const getInvoices = async (req, res) => {
 
     const groupedData = Array.from(groupedMap.values());
 
-    // Sort grouped items and their sub-invoices by newest invoiceDate first, then plantNumber descending
+    const getEffectiveTime = (inv) => {
+      const cTime = inv.createdAt ? new Date(inv.createdAt).getTime() : 0;
+      const iTime = inv.invoiceDate ? new Date(inv.invoiceDate).getTime() : 0;
+      return Math.max(cTime, iTime);
+    };
+
+    // Sort grouped items and their sub-invoices by newest effective timestamp first, then plantNumber descending
     groupedData.forEach((group) => {
       group.invoices.sort((a, b) => {
-        const dDiff = new Date(b.invoiceDate || 0) - new Date(a.invoiceDate || 0);
+        const dDiff = getEffectiveTime(b) - getEffectiveTime(a);
         if (dDiff !== 0) return dDiff;
         return String(b.invoiceNumber || "").localeCompare(String(a.invoiceNumber || ""), undefined, { numeric: true, sensitivity: "base" });
       });
     });
     groupedData.sort((a, b) => {
-      const maxA = Math.max(...a.invoices.map((i) => new Date(i.invoiceDate || 0).getTime() || 0));
-      const maxB = Math.max(...b.invoices.map((i) => new Date(i.invoiceDate || 0).getTime() || 0));
+      const maxA = Math.max(...a.invoices.map(getEffectiveTime));
+      const maxB = Math.max(...b.invoices.map(getEffectiveTime));
       if (maxB !== maxA) return maxB - maxA;
       return String(b.plantNumber || "").localeCompare(String(a.plantNumber || ""), undefined, { numeric: true, sensitivity: "base" });
     });
@@ -534,7 +560,15 @@ export const getInvoiceHistory = async (req, res) => {
         e.setHours(23, 59, 59, 999);
         dateCond.$lte = e;
       }
-      query.invoiceDate = dateCond;
+      if (!query.$and) query.$and = [];
+      query.$and.push({
+        $or: [
+          { invoiceDate: dateCond },
+          { createdAt: dateCond },
+          { deliveredAt: dateCond },
+          { cancelledAt: dateCond },
+        ],
+      });
     }
 
     if (search.trim()) {
