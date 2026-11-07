@@ -2,4 +2,4 @@ node_modules/
 dist/
 .env
 .env.production
-cloudflare_api_data.txt
+cloudflare_api_data.txt".env" 
